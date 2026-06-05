@@ -1,0 +1,12 @@
+services:
+  github-mcp:
+    build: .
+    container_name: chatgpt-github-mcp-app
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+      # 推荐把 GitHub App 私钥保存到 ./secrets/github-app-private-key.pem
+      - ./secrets:/run/secrets:ro
