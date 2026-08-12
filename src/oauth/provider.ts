@@ -32,10 +32,14 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
 
   private validateResource(resource?: URL): URL {
     const actual = resource ?? this.resource;
-    if (actual.href !== this.resource.href) {
+    const origin = new URL("/", this.config.publicBaseUrl).href;
+    if (actual.href !== this.resource.href && actual.href !== origin) {
       throw new InvalidTargetError(`Expected resource ${this.resource.href}`);
     }
-    return actual;
+    // ChatGPT may preserve a connector configured with the server origin
+    // instead of the explicit /mcp path. Canonicalize that alias so token
+    // audiences and MCP authorization remain bound to the real resource.
+    return this.resource;
   }
 
   private validateScopes(scopes: string[] | undefined): string[] {
