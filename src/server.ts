@@ -75,6 +75,19 @@ export function createApp(dependencies: AppDependencies): Express {
     ].join("")));
   });
 
+  // Some ChatGPT connector versions normalize a configured MCP URL to its
+  // origin. Keep the protected-resource discovery document available there
+  // as well as at the standards-defined /mcp path.
+  app.get("/.well-known/oauth-protected-resource", (_req, res) => {
+    res.json({
+      resource: mcpUrl.href,
+      authorization_servers: [issuerUrl.href],
+      scopes_supported: [...OAUTH_SCOPES],
+      resource_name: "ChatGPT GitHub Write Bridge",
+      resource_documentation: docsUrl.href,
+    });
+  });
+
   app.get("/oauth/approve", async (req, res, next) => {
     try {
       const requestId = typeof req.query.request_id === "string" ? req.query.request_id : "";
@@ -115,6 +128,31 @@ export function createApp(dependencies: AppDependencies): Express {
   });
 
   app.post("/mcp", authMiddleware, async (req, res) => {
+    const mcpServer = createGitHubMcpServer({ config, github, audit });
+    const transport = new StreamableHTTPServerTransport();
+    res.once("close", () => {
+      void transport.close();
+      void mcpServer.close();
+    });
+    try {
+      await mcpServer.connect(transport as never);
+      await transport.handleRequest(req, res, req.body);
+    } catch (error) {
+      console.error("MCP request failed", error);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: "2.0",
+          error: { code: -32603, message: "Internal server error" },
+          id: null,
+        });
+      }
+    }
+  });
+
+  // Compatibility alias for clients that saved the server origin instead of
+  // the explicit /mcp endpoint. The token audience remains the canonical MCP
+  // resource above, so this does not broaden authorization.
+  app.post("/", authMiddleware, async (req, res) => {
     const mcpServer = createGitHubMcpServer({ config, github, audit });
     const transport = new StreamableHTTPServerTransport();
     res.once("close", () => {
