@@ -35,6 +35,13 @@ export function createApp(dependencies: AppDependencies): Express {
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
   app.use((req, res, next) => {
+    // Railway's internal health probe may use the service's private host
+    // rather than the configured public hostname. These public, read-only
+    // endpoints are safe to answer regardless of that probe host.
+    if (req.path === "/" || req.path === "/healthz") {
+      next();
+      return;
+    }
     const hostHeader = req.headers.host ?? "";
     const hostname = hostHeader.startsWith("[")
       ? hostHeader.slice(0, hostHeader.indexOf("]") + 1).toLowerCase()
