@@ -47,10 +47,10 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     if (requested.some((scope) => !OAUTH_SCOPES.includes(scope as (typeof OAUTH_SCOPES)[number]))) {
       throw new InvalidScopeError("Unsupported OAuth scope requested");
     }
-    if (requested.includes("github:merge") && !this.config.allowMerge) {
-      throw new InvalidScopeError("github:merge is unavailable because ALLOW_MERGE=false");
-    }
-    return requested;
+    // ChatGPT may request all advertised scopes during connector setup.
+    // Keep merge disabled unless explicitly enabled, but grant the safe
+    // scopes so an unavailable optional capability does not block login.
+    return requested.filter((scope) => scope !== "github:merge" || this.config.allowMerge);
   }
 
   private storedParams(params: AuthorizationParams): StoredAuthorizationParams {
