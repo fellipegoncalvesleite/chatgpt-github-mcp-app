@@ -5,6 +5,8 @@ import type { AuditLogger } from "./audit.js";
 import type { AppConfig } from "./config.js";
 import { AppError, toErrorMessage } from "./errors.js";
 import type { GitHubService } from "./github/service.js";
+import type { LocalToolGateway } from "./local/gateway.js";
+import { registerLocalTools } from "./local/mcp-tools.js";
 
 export type GitHubToolService = Pick<
   GitHubService,
@@ -122,20 +124,22 @@ export function createGitHubMcpServer(dependencies: {
   config: AppConfig;
   github: GitHubToolService;
   audit: AuditLogger;
+  localGateway?: LocalToolGateway;
 }): McpServer {
-  const { config, github, audit } = dependencies;
+  const { config, github, audit, localGateway } = dependencies;
   const server = new McpServer(
     {
-      name: "chatgpt-github-write-bridge",
-      version: "0.1.0",
+      name: "chatgpt-development-bridge",
+      version: "0.2.0",
     },
     {
       capabilities: { logging: {} },
       instructions: [
-        "Use GitHub read tools to inspect the relevant repository and files before proposing changes.",
+        "Use GitHub read tools to inspect the relevant repository and files before proposing GitHub changes.",
         "Prefer one github_create_change call containing all related file upserts/deletions so the result is one atomic commit.",
         "github_create_change creates a chatgpt/* branch and Pull Request by default; do not request direct writes to the default branch.",
-        "Never ask for or expose GitHub App private keys, tokens, .env files, or other protected paths.",
+        "When local tools are available, they operate on the connected Mac under the user's macOS account and may execute arbitrary shell commands.",
+        "Never ask for or expose GitHub App private keys, OAuth secrets, LOCAL_AGENT_TOKEN, passwords, .env files, or other protected credentials.",
       ].join(" "),
     },
   );
@@ -281,7 +285,11 @@ export function createGitHubMcpServer(dependencies: {
       audit,
       "github_create_change",
       extra,
-      { repository: input.repository, ...(input.branch === undefined ? {} : { branch: input.branch }), paths: input.changes.map((change) => change.path) },
+      {
+        repository: input.repository,
+        ...(input.branch === undefined ? {} : { branch: input.branch }),
+        paths: input.changes.map((change) => change.path),
+      },
       async () => {
         requireScope(extra, "github:write");
         return await github.createChange({
@@ -330,7 +338,7 @@ export function createGitHubMcpServer(dependencies: {
       "github_merge_pull_request",
       {
         title: "Merge a Pull Request",
-        description: "Merge a Pull Request. This dangerous capability is only registered when ALLOW_MERGE=true.",
+        description: "Merge a Pull Request. This capability is only registered when ALLOW_MERGE=true.",
         inputSchema: z.object({
           repository: repositorySchema,
           pullNumber: z.number().int().positive(),
@@ -359,6 +367,10 @@ export function createGitHubMcpServer(dependencies: {
         return await github.deleteBranch(repository, branch);
       }),
     );
+  }
+
+  if (localGateway) {
+    registerLocalTools(server, { gateway: localGateway, audit });
   }
 
   server.registerPrompt(

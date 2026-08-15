@@ -36,6 +36,14 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     accessTokenTtlSeconds: 900,
     refreshTokenTtlSeconds: 3600,
     auditLogPath: "/tmp/chatgpt-github-mcp-audit-test.jsonl",
+    localAgentToken: "local-agent-test-token-which-is-long-enough",
+    localAgentRpcTimeoutMs: 2_000,
+    localAgentPollWaitMs: 1_000,
+    localAgentMaxOutputBytes: 100_000,
+    localAgentMaxFileBytes: 100_000,
+    localAgentMaxTerminalBytes: 100_000,
+    localAgentMaxSessions: 4,
+    localAgentMaxCommandTimeoutMs: 5_000,
     ...overrides,
   };
 }

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "A self-hosted ChatGPT MCP App that uses a GitHub App to read repositories and create safe branch + PR based code changes.",
+  "description": "A self-hosted ChatGPT MCP development bridge for GitHub changes and an optional Mac-side local coding agent.",
   "engines": {
     "node": ">=22"
   },
@@ -15,7 +15,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "npm run typecheck && npm run test && npm run build",
-    "generate:secrets": "node scripts/generate-secrets.mjs"
+    "generate:secrets": "node scripts/generate-secrets.mjs",
+    "local-agent": "npm run build && node --env-file=$HOME/.config/chatgpt-local-agent.env dist/local/agent.js",
+    "local-agent:install": "npm run build && node scripts/install-local-agent.mjs",
+    "local-agent:uninstall": "node scripts/uninstall-local-agent.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

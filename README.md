@@ -1,189 +1,267 @@
-# ChatGPT GitHub MCP App
+# ChatGPT Development Bridge
 
-这是一个**自建 GitHub 写入桥接服务**：你在 ChatGPT 网页端添加这个远程 MCP App 后，就可以直接和 ChatGPT 对话，让它读取 GitHub 仓库、修改代码、创建提交和 Pull Request。
+A self-hosted MCP service that lets ChatGPT work with your GitHub repositories and, optionally, operate a development environment on your Mac.
 
-> 默认安全策略：只允许白名单仓库；写入时创建 `chatgpt/*` 分支和 PR；默认禁止直推默认分支、禁止自动合并、禁止修改 `.github/workflows`、禁止读写 `.env`/私钥类文件。
+The project has two independent modes:
 
-## 它能做什么
+1. **GitHub mode** — the public MCP gateway reads repositories and creates branch/commit/PR changes through a GitHub App.
+2. **Mac local-agent mode** — a process running on your Mac connects outward to the gateway and exposes local filesystem, shell, persistent terminal, process, Git, test, and debugger workflows.
 
-ChatGPT 连接后会看到这些工具：
+The Mac agent is intentionally powerful. In the unrestricted configuration it can access any path your macOS account can access and can run arbitrary shell commands, including commands that invoke `sudo`. macOS itself remains the final authority on filesystem permissions and elevation.
 
-| 工具 | 作用 | 默认权限 |
-| --- | --- | --- |
-| `github_list_repositories` | 列出允许访问的仓库 | 读 |
-| `github_get_repository` | 查看仓库信息 | 读 |
-| `github_list_tree` | 查看仓库文件树 | 读 |
-| `github_read_file` | 读取文本文件 | 读 |
-| `github_list_pull_requests` | 查看 PR 列表 | 读 |
-| `github_get_pull_request` | 查看 PR 和变更文件 | 读 |
-| `github_create_change` | 多文件原子提交并创建 PR | 写 |
-| `github_comment_pull_request` | 给 PR 评论 | 写 |
-| `github_merge_pull_request` | 合并 PR，仅 `ALLOW_MERGE=true` 注册 | 高危 |
-| `github_delete_branch` | 删除 `chatgpt/*` 分支，仅 `ALLOW_DELETE_BRANCH=true` 注册 | 高危 |
+## Why the Mac agent exists
 
-## 运行要求
+A shell command executed directly by a Railway/Render/Koyeb process runs **inside that hosting container**, not on your computer. The local agent solves that by keeping ChatGPT connected to the same public MCP URL while forwarding local-tool requests to a process actually running on your Mac.
+
+The Mac initiates the connection using authenticated long polling. You do not expose SSH, a terminal port, or an inbound HTTP server on the Mac.
+
+## MCP tools
+
+### GitHub
+
+- `github_list_repositories`
+- `github_get_repository`
+- `github_list_tree`
+- `github_read_file`
+- `github_list_pull_requests`
+- `github_get_pull_request`
+- `github_create_change`
+- `github_comment_pull_request`
+- optional `github_merge_pull_request`
+- optional `github_delete_branch`
+
+### Mac local agent
+
+Read tools:
+
+- `local_get_info`
+- `local_list_directory`
+- `local_read_file`
+- `local_search_files`
+- `local_terminal_read`
+- `local_process_list`
+
+Mutating/execution tools:
+
+- `local_write_file`
+- `local_move`
+- `local_copy`
+- `local_delete`
+- `local_run`
+- `local_terminal_start`
+- `local_terminal_send`
+- `local_terminal_resize`
+- `local_terminal_stop`
+- `local_process_kill`
+
+The persistent terminal is PTY-backed on macOS through the native `script(1)` utility, which is enough for interactive shells, REPLs, debuggers, and long-running commands. The dependency-free v1 does not expose a true PTY resize ioctl; `local_terminal_resize` is best-effort and reports that limitation.
+
+## Requirements
+
+Public gateway:
 
 - Node.js 22+
-- 一个 GitHub App
-- 一个公网 HTTPS 域名，ChatGPT 需要能访问你的 `/mcp` 地址
+- a GitHub App
+- a public HTTPS URL reachable by ChatGPT
 
-## 1. 创建 GitHub App
+Mac agent:
 
-在 GitHub 进入 **Settings → Developer settings → GitHub Apps → New GitHub App**。
+- macOS
+- Node.js 22+
+- a local clone of this repository
+- outbound HTTPS access to the public gateway
 
-推荐权限：
+## 1. Create the GitHub App
 
-- Repository permissions
-  - Contents: **Read and write**
-  - Pull requests: **Read and write**
-  - Metadata: **Read-only**，默认自带
+In GitHub, open **Settings → Developer settings → GitHub Apps → New GitHub App**.
 
-Webhook 可以先关闭或留空。本项目主动调用 GitHub API，不依赖 webhook。
+Repository permissions:
 
-创建后：
+- Contents: **Read and write**
+- Pull requests: **Read and write**
+- Metadata: **Read-only**
 
-1. 记录 **App ID**。
-2. 点击 **Generate a private key** 下载 `.pem`。
-3. 安装 GitHub App 到你要让 ChatGPT 操作的仓库。
+Disable webhooks unless you add a separate feature that needs them. Install the app only on repositories ChatGPT should be able to access.
 
-## 2. 配置项目
+Record the App ID and generate a private key.
+
+## 2. Configure the public gateway
 
 ```bash
 cp .env.example .env
 npm install
-npm run generate:secrets
+npm run generate:secrets -- 'choose-a-new-admin-password'
 ```
 
-`generate:secrets` 会输出：
+Copy the generated values into your hosting provider's secret/environment settings. Do not paste private keys, OAuth secrets, or `LOCAL_AGENT_TOKEN` into chat.
 
-- `OAUTH_SIGNING_SECRET`
-- `OAUTH_ADMIN_PASSWORD_HASH`
-
-把输出值填入 `.env`。
-
-推荐把 GitHub App 私钥放到：
-
-```bash
-mkdir -p secrets
-cp your-github-app-private-key.pem secrets/github-app-private-key.pem
-chmod 600 secrets/github-app-private-key.pem
-```
-
-然后在 `.env` 中配置：
+Important variables:
 
 ```env
-GITHUB_APP_ID=你的AppID
-GITHUB_PRIVATE_KEY_PATH=/run/secrets/github-app-private-key.pem
-GITHUB_ALLOWED_REPOSITORIES=你的用户名/你的仓库
-PUBLIC_BASE_URL=https://你的域名
+PUBLIC_BASE_URL=https://your-public-host.example.com
+GITHUB_APP_ID=...
+GITHUB_PRIVATE_KEY_BASE64=...
+GITHUB_ALLOWED_REPOSITORIES=owner/repo,owner/another-repo
+OAUTH_SIGNING_SECRET=...
+OAUTH_ADMIN_PASSWORD_HASH=scrypt:...
+LOCAL_AGENT_TOKEN=...
 ```
 
-## 3. 本地开发运行
+If you only want GitHub mode, leave `LOCAL_AGENT_TOKEN` empty.
+
+Build and start:
 
 ```bash
-npm run dev
+npm run build
+npm start
 ```
 
-健康检查：
+Health:
 
 ```bash
-curl http://localhost:3000/healthz
+curl https://your-public-host.example.com/healthz
 ```
 
-本地只能用于开发。生产环境必须用 HTTPS，否则 ChatGPT 无法稳定连接 OAuth/MCP。
+The health response includes a non-secret `localAgent` status object.
 
-## 4. Docker 部署
+## 3. Connect ChatGPT
+
+Add this URL as the custom MCP app:
+
+```text
+https://your-public-host.example.com/mcp
+```
+
+Complete the OAuth approval flow. The service advertises:
+
+- `github:read`
+- `github:write`
+- optional `github:merge`
+- `local:read`
+- `local:write`
+
+If you deploy a version that adds tools/scopes after the app was already connected, refresh/reconnect the custom MCP app so ChatGPT discovers the new tool schema.
+
+## 4. Bootstrap the Mac local agent
+
+Pull the version containing the local agent onto the Mac, then:
 
 ```bash
-cp .env.example .env
-# 编辑 .env
-mkdir -p data secrets
-cp your-github-app-private-key.pem secrets/github-app-private-key.pem
-docker compose up -d --build
+npm install
+npm run build
+mkdir -p ~/.config
+chmod 700 ~/.config
 ```
 
-检查：
+Create `~/.config/chatgpt-local-agent.env`:
+
+```env
+LOCAL_AGENT_GATEWAY_URL=https://your-public-host.example.com
+LOCAL_AGENT_TOKEN=the-exact-same-token-configured-on-the-gateway
+```
+
+Lock it down:
 
 ```bash
-curl https://你的域名/healthz
+chmod 600 ~/.config/chatgpt-local-agent.env
 ```
 
-首页会显示 MCP 地址：
+Run the agent in the foreground for the first test:
+
+```bash
+npm run local-agent
+```
+
+Then call `local_get_info` from ChatGPT. A successful response should show the Mac hostname, home directory, shell, Node version, and `connected: true`.
+
+The agent does not impose its own path sandbox, but macOS privacy/TCC controls still apply. If you want it to reach privacy-protected locations that macOS denies, grant the Node executable running the agent the corresponding macOS permission (for example Full Disk Access).
+
+## 5. Install the Mac agent at login
+
+After the foreground test works:
+
+```bash
+npm run local-agent:install
+```
+
+This builds the project and installs a per-user LaunchAgent:
 
 ```text
-https://你的域名/mcp
+~/Library/LaunchAgents/dev.fellipe.chatgpt-local-agent.plist
 ```
 
-## 5. Nginx 反代
-
-示例文件在：
+The plist contains paths, not the agent secret. It loads the secret from:
 
 ```text
-deploy/nginx.conf.example
+~/.config/chatgpt-local-agent.env
 ```
 
-重点：必须保留原始 Host，并通过 HTTPS 转发：
-
-```nginx
-proxy_set_header Host $host;
-proxy_set_header X-Forwarded-Proto https;
-```
-
-## 6. 接入 ChatGPT 网页端
-
-在 ChatGPT 网页端添加自定义 MCP App，填入：
+Log output:
 
 ```text
-https://你的域名/mcp
+~/Library/Logs/chatgpt-local-agent.log
 ```
 
-首次连接时会跳转到本服务的授权页面。输入你部署时生成的管理员密码即可批准连接。
+Remove it with:
 
-连接成功后，你可以直接对 ChatGPT 说：
+```bash
+npm run local-agent:uninstall
+```
+
+## 6. What local execution can do
+
+`local_run` executes:
 
 ```text
-读取 owner/repo 这个仓库，帮我分析项目结构。然后把 xxx 功能改好，创建一个 PR，不要直接合并。
+$SHELL -lc '<command>'
 ```
 
-## 7. 推荐使用方式
+with the Mac agent's inherited environment plus any explicit environment overlay. It can run ordinary development commands such as:
 
-比较稳的提示词：
-
-```text
-请使用我的 GitHub MCP App 操作 owner/repo。
-先列出项目结构并读取相关文件；
-然后说明你准备修改哪些文件；
-最后用一次 github_create_change 提交所有相关文件并创建 PR。
-不要修改 .env、私钥、GitHub Actions 工作流，也不要合并 PR。
+```bash
+git status
+git diff
+npm test
+npm run build
+python file.py
+pytest
+lldb ...
+python -m pdb ...
 ```
 
-## 8. 安全开关说明
+Commands that require ongoing interaction should use the persistent terminal tools instead of `local_run`.
 
-| 环境变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `GITHUB_ALLOWED_REPOSITORIES` | 空 | 允许访问的仓库白名单，生产强烈建议设置 |
-| `ALLOW_ALL_INSTALLED_REPOS` | `false` | 是否允许全部已安装仓库 |
-| `BRANCH_PREFIX` | `chatgpt/` | ChatGPT 创建分支的前缀 |
-| `ALLOW_DEFAULT_BRANCH_WRITE` | `false` | 是否允许直推默认分支，不推荐 |
-| `ALLOW_MERGE` | `false` | 是否注册 PR 合并工具 |
-| `ALLOW_DELETE_BRANCH` | `false` | 是否注册删除分支工具 |
-| `ALLOW_WORKFLOW_EDITS` | `false` | 是否允许改 `.github/workflows` |
-| `PROTECTED_PATH_PATTERNS` | `.env`、私钥等 | 禁止读写的路径匹配 |
-| `MAX_FILES_PER_CHANGE` | `30` | 单次最多改多少文件 |
-| `MAX_FILE_BYTES` | `300000` | 单文件写入大小限制 |
-| `MAX_TOTAL_CHANGE_BYTES` | `2000000` | 单次总写入大小限制 |
+No application-level command allowlist or project-root sandbox is enforced. Output/file-size/session limits only protect the transport from accidental unbounded data.
 
-## 9. 审计日志
+## 7. Git identity
 
-默认写入：
+When ChatGPT uses the Mac agent to run normal local Git commands, commits use the Git identity configured in that local repository/user environment:
 
-```text
-data/audit.jsonl
+```bash
+git config user.name
+git config user.email
 ```
 
-每条记录包含：工具名、仓库、分支、路径、结果、错误摘要等。不要把这个日志公开。
+That is different from commits created by the GitHub App API.
 
-## 10. 开发与测试
+## 8. Security boundaries
+
+GitHub mode remains conservative by default:
+
+- explicit repository allowlist
+- `chatgpt/*` branches
+- PR-based writes
+- no default-branch direct write
+- no automatic merge unless enabled
+- protected GitHub repository paths
+
+Local-agent mode is deliberately broader. The gateway only receives individual tool results; audit logs record tool metadata and sanitized errors, not file contents, shell output, terminal scrollback, environment values, or the local-agent token. The agent also removes its bridge credentials from child-process environments by default.
+
+Because the shell and filesystem are intentionally unrestricted, **user-readable secrets on the Mac are not a sandbox boundary**: a command that explicitly reads a credential file can still return that file's contents. Do not treat the local agent as a secret-isolation mechanism.
+
+Rotate `LOCAL_AGENT_TOKEN` by changing it on both the gateway and Mac, then restart both sides.
+
+## 9. Development
 
 ```bash
 npm run typecheck
@@ -192,28 +270,23 @@ npm run build
 npm run check
 ```
 
-当前测试覆盖：
+Tests cover GitHub safety, OAuth, MCP tool registration, local gateway request correlation, local filesystem/shell dispatch, and the Mac-agent request loop.
 
-- 安全策略：仓库白名单、敏感路径、工作流保护、分支保护
-- GitHub 核心：多文件提交失败回滚
-- MCP：工具注册、读写权限、危险工具开关
-- HTTP/OAuth：动态客户端注册、PKCE 授权、token 交换、refresh rotation
+## 10. Hosting
 
-## 11. 打包
+The public gateway is host-agnostic. Railway works, but any provider that can keep a Node HTTPS service available long enough for MCP/OAuth requests and ~25-second long-poll requests can host it.
 
-```bash
-bash scripts/package-release.sh
-```
+Moving providers only requires moving the gateway environment variables and changing `PUBLIC_BASE_URL` / `LOCAL_AGENT_GATEWAY_URL`.
 
-输出：
+## 11. Secrets
 
-```text
-release/chatgpt-github-mcp-app.zip
-```
+Never commit:
 
-## 12. 重要提醒
+- `.env`
+- GitHub App private keys
+- OAuth store files
+- audit logs
+- `~/.config/chatgpt-local-agent.env`
+- `LOCAL_AGENT_TOKEN`
 
-- 这个服务需要公网 HTTPS 才适合接入 ChatGPT。
-- 不要把 GitHub App 私钥、`.env`、`data/oauth-store.json`、`data/audit.jsonl` 上传到公开仓库。
-- 第一次使用建议只给测试仓库授权，确认流程没问题后再扩大仓库白名单。
-- 默认不会自动合并 PR；你可以在 GitHub 网页端 review 后手动合并。
+The repository's `.env.example` contains placeholders only.

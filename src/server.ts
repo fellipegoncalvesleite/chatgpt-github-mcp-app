@@ -7,12 +7,13 @@ import {
   mcpAuthRouter,
 } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
+import { OAuthError, ServerError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { AppConfig } from "./config.js";
 import { loadConfig } from "./config.js";
 import { AuditLogger } from "./audit.js";
 import { AppError, toErrorMessage } from "./errors.js";
-import { OAuthError, ServerError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import { GitHubService } from "./github/service.js";
+import { LocalAgentGateway } from "./local/gateway.js";
 import { createGitHubMcpServer, type GitHubToolService } from "./mcp.js";
 import { OAUTH_SCOPES, SingleUserOAuthProvider } from "./oauth/provider.js";
 import { SecurityPolicy } from "./security/policy.js";
@@ -22,22 +23,32 @@ export type AppDependencies = {
   github: GitHubToolService;
   audit: AuditLogger;
   oauth: SingleUserOAuthProvider;
+  localGateway: LocalAgentGateway;
 };
 
 function htmlPage(title: string, body: string): string {
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>body{font-family:system-ui,sans-serif;max-width:820px;margin:48px auto;padding:0 20px;line-height:1.65}code,pre{background:#f5f5f5;border-radius:6px}code{padding:2px 5px}pre{padding:14px;overflow:auto}a{color:#0969da}</style></head><body>${body}</body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>body{font-family:system-ui,sans-serif;max-width:820px;margin:48px auto;padding:0 20px;line-height:1.65}code,pre{background:#f5f5f5;border-radius:6px}code{padding:2px 5px}pre{padding:14px;overflow:auto}a{color:#0969da}</style></head><body>${body}</body></html>`;
+}
+
+function localAgentBearerToken(req: Request): string {
+  const header = req.headers.authorization ?? "";
+  const match = /^Bearer\s+(.+)$/i.exec(header);
+  return match?.[1]?.trim() ?? "";
+}
+
+function boundedNumber(value: unknown, fallback: number, min: number, max: number): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(min, Math.min(max, Math.floor(value)))
+    : fallback;
 }
 
 export function createApp(dependencies: AppDependencies): Express {
-  const { config, github, audit, oauth } = dependencies;
+  const { config, github, audit, oauth, localGateway } = dependencies;
   const allowedHosts = new Set([config.publicBaseUrl.hostname.toLowerCase(), "localhost", "127.0.0.1", "[::1]"]);
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
   app.use((req, res, next) => {
-    // Railway's internal health probe may use the service's private host
-    // rather than the configured public hostname. These public, read-only
-    // endpoints are safe to answer regardless of that probe host.
     if (req.path === "/" || req.path === "/healthz") {
       next();
       return;
@@ -60,39 +71,71 @@ export function createApp(dependencies: AppDependencies): Express {
   const docsUrl = new URL("/docs", config.publicBaseUrl);
 
   app.get("/healthz", (_req, res) => {
-    res.json({ status: "ok", service: "chatgpt-github-write-bridge", version: "0.1.0" });
+    res.json({
+      status: "ok",
+      service: "chatgpt-development-bridge",
+      version: "0.2.0",
+      localAgent: localGateway.status(),
+    });
   });
 
   app.get("/", (_req, res) => {
-    res.type("html").send(htmlPage("ChatGPT GitHub Write Bridge", [
-      "<h1>ChatGPT GitHub Write Bridge</h1>",
-      "<p>这是一个供 ChatGPT 连接的自建 MCP GitHub 写入桥接服务。</p>",
-      `<p>MCP 地址：<code>${mcpUrl.href}</code></p>`,
-      '<p><a href="/docs">部署与接入说明</a> · <a href="/healthz">健康检查</a></p>',
+    const local = localGateway.status();
+    res.type("html").send(htmlPage("ChatGPT Development Bridge", [
+      "<h1>ChatGPT Development Bridge</h1>",
+      "<p>A self-hosted MCP service for GitHub repository changes and an optional Mac-side local development agent.</p>",
+      `<p>MCP endpoint: <code>${mcpUrl.href}</code></p>`,
+      `<p>Local Mac agent: <strong>${local.connected ? "connected" : local.configured ? "configured, offline" : "not configured"}</strong></p>`,
+      '<p><a href="/docs">Setup documentation</a> · <a href="/healthz">Health check</a></p>',
     ].join("")));
   });
 
   app.get("/docs", (_req, res) => {
-    res.type("html").send(htmlPage("接入说明", [
-      "<h1>接入 ChatGPT</h1>",
-      `<p>将以下公开 HTTPS 地址添加为 ChatGPT 自定义 MCP App：<code>${mcpUrl.href}</code></p>`,
-      "<p>首次连接会跳转到本服务的授权页。输入部署时配置的管理员密码批准连接。</p>",
-      "<p>默认仅注册读取、创建分支/提交/PR、PR 评论工具；合并和删除分支默认不注册。</p>",
-      "<p>完整配置步骤请查看项目压缩包中的 <code>README.md</code>。</p>",
+    res.type("html").send(htmlPage("ChatGPT Development Bridge setup", [
+      "<h1>Connect ChatGPT</h1>",
+      `<p>Add this public HTTPS endpoint as the custom MCP app: <code>${mcpUrl.href}</code></p>`,
+      "<p>The first connection redirects to this service's approval page. Enter the administrator password configured for this deployment.</p>",
+      "<p>GitHub tools work entirely through the public gateway. Local filesystem, shell, terminal, process, and debugging tools require the optional Mac local agent.</p>",
+      "<p>The Mac agent connects outward to this service; the Mac does not expose a public shell port.</p>",
+      "<p>See <code>README.md</code> in the repository for gateway and Mac-agent setup.</p>",
     ].join("")));
   });
 
-  // Some ChatGPT connector versions normalize a configured MCP URL to its
-  // origin. Keep the protected-resource discovery document available there
-  // as well as at the standards-defined /mcp path.
   app.get("/.well-known/oauth-protected-resource", (_req, res) => {
     res.json({
       resource: mcpUrl.href,
       authorization_servers: [issuerUrl.href],
       scopes_supported: [...OAUTH_SCOPES],
-      resource_name: "ChatGPT GitHub Write Bridge",
+      resource_name: "ChatGPT Development Bridge",
       resource_documentation: docsUrl.href,
     });
+  });
+
+  app.post("/local-agent/poll", async (req, res, next) => {
+    try {
+      localGateway.assertToken(localAgentBearerToken(req));
+      const agentId = typeof req.body?.agentId === "string" ? req.body.agentId : "";
+      const waitMs = boundedNumber(req.body?.waitMs, config.localAgentPollWaitMs, 0, config.localAgentPollWaitMs);
+      const work = await localGateway.poll(agentId, waitMs);
+      if (work === null) {
+        res.status(204).end();
+        return;
+      }
+      res.json(work);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/local-agent/respond", (req, res, next) => {
+    try {
+      localGateway.assertToken(localAgentBearerToken(req));
+      const agentId = typeof req.body?.agentId === "string" ? req.body.agentId : "";
+      localGateway.respond(agentId, req.body?.response);
+      res.status(204).end();
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get("/oauth/approve", async (req, res, next) => {
@@ -125,7 +168,7 @@ export function createApp(dependencies: AppDependencies): Express {
     resourceServerUrl: mcpUrl,
     serviceDocumentationUrl: docsUrl,
     scopesSupported: [...OAUTH_SCOPES],
-    resourceName: "ChatGPT GitHub Write Bridge",
+    resourceName: "ChatGPT Development Bridge",
   }));
 
   const authMiddleware = requireBearerAuth({
@@ -134,8 +177,8 @@ export function createApp(dependencies: AppDependencies): Express {
     resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(mcpUrl),
   });
 
-  app.post("/mcp", authMiddleware, async (req, res) => {
-    const mcpServer = createGitHubMcpServer({ config, github, audit });
+  const handleMcpPost = async (req: Request, res: Response) => {
+    const mcpServer = createGitHubMcpServer({ config, github, audit, localGateway });
     const transport = new StreamableHTTPServerTransport();
     res.once("close", () => {
       void transport.close();
@@ -154,32 +197,10 @@ export function createApp(dependencies: AppDependencies): Express {
         });
       }
     }
-  });
+  };
 
-  // Compatibility alias for clients that saved the server origin instead of
-  // the explicit /mcp endpoint. The token audience remains the canonical MCP
-  // resource above, so this does not broaden authorization.
-  app.post("/", authMiddleware, async (req, res) => {
-    const mcpServer = createGitHubMcpServer({ config, github, audit });
-    const transport = new StreamableHTTPServerTransport();
-    res.once("close", () => {
-      void transport.close();
-      void mcpServer.close();
-    });
-    try {
-      await mcpServer.connect(transport as never);
-      await transport.handleRequest(req, res, req.body);
-    } catch (error) {
-      console.error("MCP request failed", error);
-      if (!res.headersSent) {
-        res.status(500).json({
-          jsonrpc: "2.0",
-          error: { code: -32603, message: "Internal server error" },
-          id: null,
-        });
-      }
-    }
-  });
+  app.post("/mcp", authMiddleware, handleMcpPost);
+  app.post("/", authMiddleware, handleMcpPost);
 
   app.get("/mcp", authMiddleware, (_req, res) => {
     res.status(405).json({
@@ -205,7 +226,11 @@ export function createApp(dependencies: AppDependencies): Express {
     const errorWithStatus = error as { status?: unknown; type?: unknown };
     const inferredStatus = typeof errorWithStatus?.status === "number" ? errorWithStatus.status : 500;
     const status = error instanceof AppError ? error.status : inferredStatus;
-    const code = error instanceof AppError ? error.code : (errorWithStatus?.type === "entity.too.large" ? "request_too_large" : "internal_error");
+    const code = error instanceof AppError
+      ? error.code
+      : errorWithStatus?.type === "entity.too.large"
+        ? "request_too_large"
+        : "internal_error";
     res.status(status).json({ error: code, message: toErrorMessage(error) });
   });
 
@@ -219,6 +244,7 @@ export function createDefaultDependencies(config = loadConfig()): AppDependencie
     audit: new AuditLogger(config.auditLogPath),
     oauth: new SingleUserOAuthProvider(config),
     github: new GitHubService(config, policy),
+    localGateway: new LocalAgentGateway(config),
   };
 }
 
@@ -226,7 +252,7 @@ export function startServer(dependencies = createDefaultDependencies()): HttpSer
   const app = createApp(dependencies);
   const server = createServer(app);
   server.listen(dependencies.config.port, "0.0.0.0", () => {
-    console.log(`ChatGPT GitHub Write Bridge listening on ${dependencies.config.publicBaseUrl.href}`);
+    console.log(`ChatGPT Development Bridge listening on ${dependencies.config.publicBaseUrl.href}`);
     console.log(`MCP endpoint: ${new URL("/mcp", dependencies.config.publicBaseUrl).href}`);
   });
   return server;
@@ -235,9 +261,11 @@ export function startServer(dependencies = createDefaultDependencies()): HttpSer
 const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (isMainModule) {
-  const server = startServer();
+  const dependencies = createDefaultDependencies();
+  const server = startServer(dependencies);
   const shutdown = (signal: string) => {
     console.log(`Received ${signal}; shutting down.`);
+    dependencies.localGateway.close();
     server.close((error) => {
       if (error) {
         console.error(error);
