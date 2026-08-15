@@ -32,6 +32,14 @@ const configSchema = z.object({
   accessTokenTtlSeconds: z.number().int().min(60).max(86400),
   refreshTokenTtlSeconds: z.number().int().min(300),
   auditLogPath: z.string().min(1),
+  localAgentToken: z.string(),
+  localAgentRpcTimeoutMs: z.number().int().min(1_000).max(600_000),
+  localAgentPollWaitMs: z.number().int().min(1_000).max(30_000),
+  localAgentMaxOutputBytes: z.number().int().min(1_024),
+  localAgentMaxFileBytes: z.number().int().min(1_024),
+  localAgentMaxTerminalBytes: z.number().int().min(1_024),
+  localAgentMaxSessions: z.number().int().min(1).max(100),
+  localAgentMaxCommandTimeoutMs: z.number().int().min(1_000).max(600_000),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;
@@ -86,5 +94,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     accessTokenTtlSeconds: asInteger(env.ACCESS_TOKEN_TTL_SECONDS, 900),
     refreshTokenTtlSeconds: asInteger(env.REFRESH_TOKEN_TTL_SECONDS, 2_592_000),
     auditLogPath: env.AUDIT_LOG_PATH ?? "data/audit.jsonl",
+    localAgentToken: env.LOCAL_AGENT_TOKEN ?? "",
+    localAgentRpcTimeoutMs: asInteger(env.LOCAL_AGENT_RPC_TIMEOUT_MS, 300_000),
+    localAgentPollWaitMs: asInteger(env.LOCAL_AGENT_POLL_WAIT_MS, 25_000),
+    localAgentMaxOutputBytes: asInteger(env.LOCAL_AGENT_MAX_OUTPUT_BYTES, 500_000),
+    localAgentMaxFileBytes: asInteger(env.LOCAL_AGENT_MAX_FILE_BYTES, 1_000_000),
+    localAgentMaxTerminalBytes: asInteger(env.LOCAL_AGENT_MAX_TERMINAL_BYTES, 1_000_000),
+    localAgentMaxSessions: asInteger(env.LOCAL_AGENT_MAX_SESSIONS, 16),
+    localAgentMaxCommandTimeoutMs: asInteger(env.LOCAL_AGENT_MAX_COMMAND_TIMEOUT_MS, 120_000),
   });
 }

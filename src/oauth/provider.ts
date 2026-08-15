@@ -15,7 +15,13 @@ import type { AppConfig } from "../config.js";
 import { htmlEscape, randomToken } from "../utils.js";
 import { JsonOAuthStore, type StoredAuthorizationParams } from "./store.js";
 
-export const OAUTH_SCOPES = ["github:read", "github:write", "github:merge"] as const;
+export const OAUTH_SCOPES = [
+  "github:read",
+  "github:write",
+  "github:merge",
+  "local:read",
+  "local:write",
+] as const;
 
 export class SingleUserOAuthProvider implements OAuthServerProvider {
   readonly clientsStore: JsonOAuthStore;
@@ -36,20 +42,17 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     if (actual.href !== this.resource.href && actual.href !== origin) {
       throw new InvalidTargetError(`Expected resource ${this.resource.href}`);
     }
-    // ChatGPT may preserve a connector configured with the server origin
-    // instead of the explicit /mcp path. Canonicalize that alias so token
-    // audiences and MCP authorization remain bound to the real resource.
     return this.resource;
   }
 
   private validateScopes(scopes: string[] | undefined): string[] {
-    const requested = scopes?.length ? [...new Set(scopes)] : ["github:read", "github:write"];
+    const defaults = this.config.localAgentToken
+      ? ["github:read", "github:write", "local:read", "local:write"]
+      : ["github:read", "github:write"];
+    const requested = scopes?.length ? [...new Set(scopes)] : defaults;
     if (requested.some((scope) => !OAUTH_SCOPES.includes(scope as (typeof OAUTH_SCOPES)[number]))) {
       throw new InvalidScopeError("Unsupported OAuth scope requested");
     }
-    // ChatGPT may request all advertised scopes during connector setup.
-    // Keep merge disabled unless explicitly enabled, but grant the safe
-    // scopes so an unavailable optional capability does not block login.
     return requested.filter((scope) => scope !== "github:merge" || this.config.allowMerge);
   }
 
@@ -80,14 +83,15 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     const clientName = client?.client_name ?? pending.clientId;
     const scopes = pending.params.scopes.map((scope) => `<li><code>${htmlEscape(scope)}</code></li>`).join("");
     return `<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>授权 ChatGPT GitHub MCP App</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Authorize ChatGPT Development Bridge</title>
 <style>body{font-family:system-ui,sans-serif;max-width:640px;margin:48px auto;padding:0 18px;line-height:1.55}form{display:grid;gap:14px;padding:22px;border:1px solid #ddd;border-radius:14px}input,button{font:inherit;padding:10px}button{cursor:pointer}.actions{display:flex;gap:10px}.deny{background:#fff;border:1px solid #aaa}</style></head>
-<body><h1>授权 GitHub 写入桥接服务</h1><p>客户端 <strong>${htmlEscape(clientName)}</strong> 请求连接你的自建 MCP 服务。</p>
-<p>目标资源：<code>${htmlEscape(pending.params.resource ?? this.resource.href)}</code></p><p>请求权限：</p><ul>${scopes}</ul>
+<body><h1>Authorize Development Bridge</h1><p>Client <strong>${htmlEscape(clientName)}</strong> is requesting access to your self-hosted MCP service.</p>
+<p>Resource: <code>${htmlEscape(pending.params.resource ?? this.resource.href)}</code></p><p>Requested scopes:</p><ul>${scopes}</ul>
+<p><strong>Local scopes are powerful:</strong> when the Mac agent is connected, <code>local:write</code> permits arbitrary filesystem mutation and shell execution using your macOS account.</p>
 <form method="post" action="/oauth/approve"><input type="hidden" name="request_id" value="${htmlEscape(requestId)}">
-<label>管理员密码（批准时必填）<input type="password" name="password" autocomplete="current-password"></label>
-<div class="actions"><button type="submit" name="action" value="approve">批准连接</button><button class="deny" type="submit" name="action" value="deny">拒绝</button></div></form></body></html>`;
+<label>Administrator password<input type="password" name="password" autocomplete="current-password" required></label>
+<div class="actions"><button type="submit" name="action" value="approve">Approve connection</button><button class="deny" type="submit" name="action" value="deny">Deny</button></div></form></body></html>`;
   }
 
   private verifyAdminPassword(password: string): boolean {
@@ -170,7 +174,12 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     return this.issueTokens(client.client_id, record.params.scopes, expectedResource);
   }
 
-  async exchangeRefreshToken(client: OAuthClientInformationFull, refreshToken: string, scopes?: string[], resource?: URL): Promise<OAuthTokens> {
+  async exchangeRefreshToken(
+    client: OAuthClientInformationFull,
+    refreshToken: string,
+    scopes?: string[],
+    resource?: URL,
+  ): Promise<OAuthTokens> {
     const record = await this.clientsStore.takeRefreshToken(refreshToken);
     if (!record || record.expiresAt <= Date.now() || record.clientId !== client.client_id) {
       throw new InvalidGrantError("Invalid or expired refresh token");

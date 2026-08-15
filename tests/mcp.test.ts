@@ -6,14 +6,43 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { describe, expect, it, vi } from "vitest";
 import { AuditLogger } from "../src/audit.js";
+import type { AppConfig } from "../src/config.js";
+import type { LocalToolGateway } from "../src/local/gateway.js";
 import { createGitHubMcpServer } from "../src/mcp.js";
 import { fakeGitHubService, testConfig } from "./helpers.js";
 
-async function connectedClient(scopes: string[], overrides = {}) {
+function fakeLocalGateway(): LocalToolGateway {
+  return {
+    status() {
+      return {
+        configured: true,
+        connected: true,
+        agentId: "mac-test",
+        lastSeenAt: new Date().toISOString(),
+        queuedRequests: 0,
+        pendingRequests: 0,
+      };
+    },
+    async request(method, params) {
+      return { method, params, hostname: "test-mac" };
+    },
+  };
+}
+
+async function connectedClient(
+  scopes: string[],
+  overrides: Partial<AppConfig> = {},
+  localGateway?: LocalToolGateway,
+) {
   const directory = await mkdtemp(join(tmpdir(), "github-mcp-test-"));
   const config = testConfig({ auditLogPath: join(directory, "audit.jsonl"), ...overrides });
   const github = fakeGitHubService();
-  const server = createGitHubMcpServer({ config, github, audit: new AuditLogger(config.auditLogPath) });
+  const server = createGitHubMcpServer({
+    config,
+    github,
+    audit: new AuditLogger(config.auditLogPath),
+    ...(localGateway === undefined ? {} : { localGateway }),
+  });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const originalSend = clientTransport.send.bind(clientTransport);
   const authInfo: AuthInfo = {
@@ -90,5 +119,33 @@ describe("GitHub MCP tools", () => {
     expect(createChange).not.toHaveBeenCalled();
     await client.close();
     await server.close();
+  });
+
+  it("registers local tools and enforces local OAuth scopes", async () => {
+    const gateway = fakeLocalGateway();
+    const withoutLocalScope = await connectedClient(["github:read"], {}, gateway);
+    const names = (await withoutLocalScope.client.listTools()).tools.map((tool) => tool.name);
+    expect(names).toContain("local_get_info");
+    expect(names).toContain("local_run");
+
+    const denied = await withoutLocalScope.client.callTool({ name: "local_get_info", arguments: {} });
+    expect(denied.isError).toBe(true);
+    expect(JSON.stringify(denied.structuredContent)).toContain("local:read");
+    await withoutLocalScope.client.close();
+    await withoutLocalScope.server.close();
+
+    const withLocalScope = await connectedClient(["local:read", "local:write"], {}, gateway);
+    const info = await withLocalScope.client.callTool({ name: "local_get_info", arguments: {} });
+    expect(info.isError).not.toBe(true);
+    expect(JSON.stringify(info.structuredContent)).toContain("test-mac");
+
+    const run = await withLocalScope.client.callTool({
+      name: "local_run",
+      arguments: { command: "pwd", cwd: "/tmp" },
+    });
+    expect(run.isError).not.toBe(true);
+    expect(JSON.stringify(run.structuredContent)).toContain("shell.run");
+    await withLocalScope.client.close();
+    await withLocalScope.server.close();
   });
 });
