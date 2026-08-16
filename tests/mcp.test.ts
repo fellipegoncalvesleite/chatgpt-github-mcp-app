@@ -127,6 +127,9 @@ describe("GitHub MCP tools", () => {
     const names = (await withoutLocalScope.client.listTools()).tools.map((tool) => tool.name);
     expect(names).toContain("local_get_info");
     expect(names).toContain("local_run");
+    expect(names).toContain("local_get_project_context");
+    expect(names).toContain("local_code_search");
+    expect(names).toContain("local_git_review");
 
     const denied = await withoutLocalScope.client.callTool({ name: "local_get_info", arguments: {} });
     expect(denied.isError).toBe(true);

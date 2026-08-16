@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -90,6 +91,101 @@ describe("local dispatcher", () => {
     expect(info.nodeVersion).toMatch(/^v/);
     const processes = await dispatchLocalRequest("process.list", { limit: 10 }, runtime) as { processes: unknown[] };
     expect(processes.processes.length).toBeGreaterThan(0);
+    runtime.terminal.closeAll();
+  });
+});
+
+
+describe("local development intelligence", () => {
+  async function createGitFixture() {
+    const directory = await mkdtemp(join(tmpdir(), "local-development-"));
+    created.push(directory);
+    await mkdir(join(directory, "src"), { recursive: true });
+    await writeFile(join(directory, "package.json"), JSON.stringify({
+      scripts: { test: "vitest run", build: "tsc -p tsconfig.json", lint: "eslint ." },
+    }, null, 2));
+    await writeFile(join(directory, "package-lock.json"), "{}\n");
+    await writeFile(join(directory, "AGENTS.md"), "root rules\n");
+    await writeFile(join(directory, "src", "AGENTS.override.md"), "src rules\n");
+    await writeFile(join(directory, "src", "index.ts"), "export const createGitHubMcpServer = true;\n");
+    await writeFile(join(directory, ".gitignore"), "node_modules/\n");
+    execFileSync("git", ["init", "-b", "main"], { cwd: directory });
+    execFileSync("git", ["config", "user.email", "tests@example.com"], { cwd: directory });
+    execFileSync("git", ["config", "user.name", "Tests"], { cwd: directory });
+    execFileSync("git", ["add", "."], { cwd: directory });
+    execFileSync("git", ["commit", "-m", "initial"], { cwd: directory });
+    return await realpath(directory);
+  }
+
+  it("summarizes repository context conservatively from project files and Git state", async () => {
+    const directory = await createGitFixture();
+    await writeFile(join(directory, "src", "index.ts"), "export const createGitHubMcpServer = false;\n");
+    await writeFile(join(directory, "untracked.txt"), "new\n");
+    const runtime = services();
+
+    await expect(dispatchLocalRequest("development.projectContext", {
+      workingDirectory: join(directory, "src"),
+    }, runtime)).resolves.toMatchObject({
+      repositoryRoot: directory,
+      workingDirectory: join(directory, "src"),
+      currentBranch: "main",
+      dirty: true,
+      packageManager: "npm",
+      packageFiles: expect.arrayContaining(["package.json", "package-lock.json"]),
+      testCommands: ["npm test"],
+      buildCommands: ["npm run build"],
+      lintCommands: ["npm run lint"],
+      AGENTSFiles: expect.arrayContaining([join(directory, "AGENTS.md"), join(directory, "src", "AGENTS.override.md")]),
+      modifiedFiles: expect.arrayContaining(["src/index.ts"]),
+      untrackedFiles: expect.arrayContaining(["untracked.txt"]),
+    });
+    runtime.terminal.closeAll();
+  });
+
+  it("searches source text with line numbers while ignoring dependency directories", async () => {
+    const directory = await createGitFixture();
+    await mkdir(join(directory, "node_modules", "ignored"), { recursive: true });
+    await writeFile(join(directory, "node_modules", "ignored", "copy.ts"), "createGitHubMcpServer\n");
+    const runtime = services();
+
+    const result = await dispatchLocalRequest("development.codeSearch", {
+      root: directory,
+      query: "createGitHubMcpServer",
+      maxResults: 10,
+      contextLines: 1,
+    }, runtime) as { backend: string; matches: Array<{ path: string; line: number; text: string }> };
+
+    expect(["rg", "git-grep", "node"]).toContain(result.backend);
+    expect(result.matches).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: join(directory, "src", "index.ts"), line: 1 }),
+    ]));
+    expect(result.matches.some((match) => match.path.includes("node_modules"))).toBe(false);
+    runtime.terminal.closeAll();
+  });
+
+  it("returns structured Git review state and a bounded optional patch", async () => {
+    const directory = await createGitFixture();
+    await writeFile(join(directory, "src", "index.ts"), "export const createGitHubMcpServer = false;\n");
+    execFileSync("git", ["add", "src/index.ts"], { cwd: directory });
+    await writeFile(join(directory, "AGENTS.md"), "changed root rules\n");
+    await writeFile(join(directory, "untracked.txt"), "new\n");
+    const runtime = services();
+
+    await expect(dispatchLocalRequest("development.gitReview", {
+      workingDirectory: directory,
+      includePatch: true,
+      maxPatchBytes: 10_000,
+    }, runtime)).resolves.toMatchObject({
+      repositoryRoot: directory,
+      branch: "main",
+      headSha: expect.stringMatching(/^[0-9a-f]{40}$/),
+      stagedFiles: expect.arrayContaining(["src/index.ts"]),
+      unstagedFiles: expect.arrayContaining(["AGENTS.md"]),
+      untrackedFiles: expect.arrayContaining(["untracked.txt"]),
+      conflicts: [],
+      patchTruncated: false,
+      patch: expect.stringContaining("createGitHubMcpServer"),
+    });
     runtime.terminal.closeAll();
   });
 });

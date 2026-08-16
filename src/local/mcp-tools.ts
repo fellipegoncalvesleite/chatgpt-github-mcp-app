@@ -107,6 +107,60 @@ export function registerLocalTools(
   );
 
   server.registerTool(
+    "local_get_project_context",
+    {
+      title: "Get local project context",
+      description: "Summarize the current Git repository, branch/dirty state, detected project metadata, discoverable commands, and applicable AGENTS instruction files in one read-only call.",
+      inputSchema: z.object({ workingDirectory: pathSchema }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ workingDirectory }, extra) => localTool(audit, "local_get_project_context", extra, { workingDirectory }, async () => {
+      requireLocalScope(extra, "local:read");
+      return await gateway.request("development.projectContext", { workingDirectory });
+    }),
+  );
+
+  server.registerTool(
+    "local_code_search",
+    {
+      title: "Search local source code",
+      description: "Search repository text quickly with path/line/context results. Prefers ripgrep when available and otherwise uses a Git-aware fallback that respects ignored files.",
+      inputSchema: z.object({
+        root: pathSchema,
+        query: z.string().min(1).max(10_000),
+        globs: z.array(z.string().min(1).max(1_000)).max(50).optional(),
+        maxResults: z.number().int().min(1).max(500).default(50),
+        contextLines: z.number().int().min(0).max(5).default(1),
+        regex: z.boolean().default(false),
+        caseSensitive: z.boolean().default(true),
+      }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (input, extra) => localTool(audit, "local_code_search", extra, { root: input.root, query: input.query }, async () => {
+      requireLocalScope(extra, "local:read");
+      return await gateway.request("development.codeSearch", input);
+    }),
+  );
+
+  server.registerTool(
+    "local_git_review",
+    {
+      title: "Review local Git state",
+      description: "Return structured branch, upstream, staged/unstaged/untracked/conflict state and diff stats, with an optional bounded patch for final verification.",
+      inputSchema: z.object({
+        workingDirectory: pathSchema,
+        includePatch: z.boolean().default(false),
+        maxPatchBytes: z.number().int().min(1_000).max(2_000_000).default(200_000),
+      }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (input, extra) => localTool(audit, "local_git_review", extra, { workingDirectory: input.workingDirectory }, async () => {
+      requireLocalScope(extra, "local:read");
+      return await gateway.request("development.gitReview", input);
+    }),
+  );
+
+  server.registerTool(
     "local_list_directory",
     {
       title: "List local directory",

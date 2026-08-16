@@ -8,7 +8,10 @@ import {
   searchLocalFiles,
   writeLocalTextFile,
 } from "./filesystem.js";
+import { searchCode } from "./code-search.js";
+import { reviewGit } from "./git-review.js";
 import { killLocalProcess, listLocalProcesses } from "./processes.js";
+import { getProjectContext } from "./project-context.js";
 import { LocalExecutionError } from "./protocol.js";
 import { runShell } from "./shell.js";
 import { TerminalManager } from "./terminal.js";
@@ -57,6 +60,15 @@ function numberParam(
   if (options.min !== undefined && integer < options.min) throw new LocalExecutionError("invalid_params", `${key} must be >= ${options.min}`);
   if (options.max !== undefined && integer > options.max) throw new LocalExecutionError("invalid_params", `${key} must be <= ${options.max}`);
   return integer;
+}
+
+function stringArrayParam(params: Record<string, unknown>, key: string): string[] | undefined {
+  const value = params[key];
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim())) {
+    throw new LocalExecutionError("invalid_params", `${key} must be an array of non-empty strings`);
+  }
+  return value as string[];
 }
 
 function envParam(params: Record<string, unknown>): Record<string, string> | undefined {
@@ -141,6 +153,27 @@ export async function dispatchLocalRequest(
         stringParam(params, "query")!,
         { maxResults: numberParam(params, "maxResults", { fallback: 50, min: 1, max: 500 }) ?? 50 },
       );
+
+    case "development.projectContext":
+      return await getProjectContext(stringParam(params, "workingDirectory")!);
+
+    case "development.codeSearch":
+      return await searchCode({
+        root: stringParam(params, "root")!,
+        query: stringParam(params, "query")!,
+        globs: stringArrayParam(params, "globs") ?? [],
+        maxResults: numberParam(params, "maxResults", { fallback: 50, min: 1, max: 500 }) ?? 50,
+        contextLines: numberParam(params, "contextLines", { fallback: 1, min: 0, max: 5 }) ?? 1,
+        regex: booleanParam(params, "regex", false),
+        caseSensitive: booleanParam(params, "caseSensitive", true),
+      });
+
+    case "development.gitReview":
+      return await reviewGit({
+        workingDirectory: stringParam(params, "workingDirectory")!,
+        includePatch: booleanParam(params, "includePatch", false),
+        maxPatchBytes: numberParam(params, "maxPatchBytes", { fallback: 200_000, min: 1_000, max: 2_000_000 }) ?? 200_000,
+      });
 
     case "shell.run": {
       const timeoutMs = Math.min(
