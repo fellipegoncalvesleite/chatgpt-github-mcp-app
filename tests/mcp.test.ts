@@ -149,3 +149,48 @@ describe("GitHub MCP tools", () => {
     await withLocalScope.server.close();
   });
 });
+
+describe("development workflow", () => {
+  it("publishes inspect-first, AGENTS, testing, and final-verification instructions", async () => {
+    const { client, server } = await connectedClient(["github:read"]);
+    const instructions = client.getInstructions() ?? "";
+
+    expect(instructions).toMatch(/inspect before edit/i);
+    expect(instructions).toMatch(/AGENTS\.override\.md/);
+    expect(instructions).toMatch(/AGENTS\.md/);
+    expect(instructions).toMatch(/plan non-trivial/i);
+    expect(instructions).toMatch(/test after edit/i);
+    expect(instructions).toMatch(/inspect (the )?final Git state|review (the )?final Git/i);
+    expect(instructions).toMatch(/verify before claiming completion/i);
+
+    await client.close();
+    await server.close();
+  });
+
+  it("registers development_workflow while keeping safe_github_development", async () => {
+    const { client, server } = await connectedClient(["github:read"]);
+    const prompts = (await client.listPrompts()).prompts.map((prompt) => prompt.name);
+
+    expect(prompts).toContain("safe_github_development");
+    expect(prompts).toContain("development_workflow");
+
+    const prompt = await client.getPrompt({
+      name: "development_workflow",
+      arguments: {
+        repository: "acme/demo",
+        task: "Fix the parser without changing unrelated behavior",
+        workingDirectory: "/tmp/demo",
+      },
+    });
+    const text = JSON.stringify(prompt.messages);
+    expect(text).toContain("acme/demo");
+    expect(text).toContain("Fix the parser without changing unrelated behavior");
+    expect(text).toContain("/tmp/demo");
+    expect(text).toMatch(/AGENTS/);
+    expect(text).toMatch(/targeted tests/i);
+    expect(text).toMatch(/Git state|git review/i);
+
+    await client.close();
+    await server.close();
+  });
+});

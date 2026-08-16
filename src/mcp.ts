@@ -8,6 +8,7 @@ import type { GitHubService } from "./github/service.js";
 import { registerGmailTools, type GmailToolService } from "./gmail/mcp-tools.js";
 import type { LocalToolGateway } from "./local/gateway.js";
 import { registerLocalTools } from "./local/mcp-tools.js";
+import { DEVELOPMENT_INSTRUCTIONS, developmentWorkflowText } from "./workflows/development.js";
 
 export type GitHubToolService = Pick<
   GitHubService,
@@ -136,15 +137,7 @@ export function createGitHubMcpServer(dependencies: {
     },
     {
       capabilities: { logging: {} },
-      instructions: [
-        "Use GitHub read tools to inspect the relevant repository and files before proposing GitHub changes.",
-        "Prefer one github_create_change call containing all related file upserts/deletions so the result is one atomic commit.",
-        "github_create_change creates a chatgpt/* branch and Pull Request by default; do not request direct writes to the default branch.",
-        "When local tools are available, they operate on the connected Mac under the user's macOS account and may execute arbitrary shell commands.",
-        "When Gmail tools are available, use search/list tools before reading individual messages and never expose Google OAuth credentials or tokens.",
-        "Gmail v1 intentionally has no trash or permanent-delete tools.",
-        "Never ask for or expose GitHub App private keys, OAuth secrets, LOCAL_AGENT_TOKEN, passwords, .env files, or other protected credentials.",
-      ].join(" "),
+      instructions: DEVELOPMENT_INSTRUCTIONS.join(" "),
     },
   );
 
@@ -380,6 +373,32 @@ export function createGitHubMcpServer(dependencies: {
   if (gmail) {
     registerGmailTools(server, { gmail, audit });
   }
+
+  server.registerPrompt(
+    "development_workflow",
+    {
+      title: "Codex-style development workflow",
+      description: "Inspect, plan, implement, test, review Git state, optionally verify visual context and CI, then report evidence.",
+      argsSchema: {
+        repository: repositorySchema,
+        task: z.string().min(1).max(20_000),
+        workingDirectory: z.string().min(1).max(32_768).optional(),
+      },
+    },
+    async ({ repository, task, workingDirectory }) => ({
+      messages: [{
+        role: "user",
+        content: {
+          type: "text",
+          text: developmentWorkflowText({
+            repository,
+            task,
+            ...(workingDirectory === undefined ? {} : { workingDirectory }),
+          }),
+        },
+      }],
+    }),
+  );
 
   server.registerPrompt(
     "safe_github_development",
