@@ -24,6 +24,13 @@ function fakeLocalGateway(): LocalToolGateway {
       };
     },
     async request(method, params) {
+      if (method === "system.capabilities") {
+        return {
+          platform: "darwin",
+          local: { filesystemRead: true, filesystemWrite: true, shell: true, terminal: true, processes: true, projectContext: true, codeSearch: true, gitReview: true },
+          vision: { uiContext: true, screenshots: true, screenRecordingPermission: "unknown" },
+        };
+      }
       return { method, params, hostname: "test-mac" };
     },
   };
@@ -66,8 +73,24 @@ describe("GitHub MCP tools", () => {
     const names = (await client.listTools()).tools.map((tool) => tool.name);
     expect(names).toContain("github_read_file");
     expect(names).toContain("github_create_change");
+    expect(names).toContain("github_get_check_status");
+    expect(names).toContain("github_list_workflow_runs");
+    expect(names).toContain("github_get_workflow_run");
     expect(names).not.toContain("github_merge_pull_request");
     expect(names).not.toContain("github_delete_branch");
+    await client.close();
+    await server.close();
+  });
+
+
+  it("requires github:read for CI status tools", async () => {
+    const { client, server } = await connectedClient([]);
+    const result = await client.callTool({
+      name: "github_get_check_status",
+      arguments: { repository: "acme/demo", ref: "main" },
+    });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.structuredContent)).toContain("insufficient_scope");
     await client.close();
     await server.close();
   });
@@ -127,6 +150,12 @@ describe("GitHub MCP tools", () => {
     const names = (await withoutLocalScope.client.listTools()).tools.map((tool) => tool.name);
     expect(names).toContain("local_get_info");
     expect(names).toContain("local_run");
+    expect(names).toContain("local_get_project_context");
+    expect(names).toContain("local_code_search");
+    expect(names).toContain("local_git_review");
+    expect(names).toContain("local_get_ui_context");
+    expect(names).toContain("local_capture_screen");
+    expect(names).toContain("local_get_capabilities");
 
     const denied = await withoutLocalScope.client.callTool({ name: "local_get_info", arguments: {} });
     expect(denied.isError).toBe(true);
@@ -139,6 +168,15 @@ describe("GitHub MCP tools", () => {
     expect(info.isError).not.toBe(true);
     expect(JSON.stringify(info.structuredContent)).toContain("test-mac");
 
+    const capabilities = await withLocalScope.client.callTool({ name: "local_get_capabilities", arguments: {} });
+    expect(capabilities.isError).not.toBe(true);
+    expect(capabilities.structuredContent).toMatchObject({
+      GitHub: { read: false, write: false, merge: false },
+      Local: { filesystemRead: true, filesystemWrite: true, shell: true, terminal: true, processes: true },
+      Vision: { uiContext: true, screenshots: true, screenRecordingPermission: "unknown" },
+      Gmail: { read: false, send: false },
+    });
+
     const run = await withLocalScope.client.callTool({
       name: "local_run",
       arguments: { command: "pwd", cwd: "/tmp" },
@@ -147,5 +185,140 @@ describe("GitHub MCP tools", () => {
     expect(JSON.stringify(run.structuredContent)).toContain("shell.run");
     await withLocalScope.client.close();
     await withLocalScope.server.close();
+  });
+});
+
+describe("development workflow", () => {
+  it("publishes inspect-first, AGENTS, testing, and final-verification instructions", async () => {
+    const { client, server } = await connectedClient(["github:read"]);
+    const instructions = client.getInstructions() ?? "";
+
+    expect(instructions).toMatch(/inspect before edit/i);
+    expect(instructions).toMatch(/AGENTS\.override\.md/);
+    expect(instructions).toMatch(/AGENTS\.md/);
+    expect(instructions).toMatch(/plan non-trivial/i);
+    expect(instructions).toMatch(/test after edit/i);
+    expect(instructions).toMatch(/inspect (the )?final Git state|review (the )?final Git/i);
+    expect(instructions).toMatch(/verify before claiming completion/i);
+
+    await client.close();
+    await server.close();
+  });
+
+  it("registers development_workflow while keeping safe_github_development", async () => {
+    const { client, server } = await connectedClient(["github:read"]);
+    const prompts = (await client.listPrompts()).prompts.map((prompt) => prompt.name);
+
+    expect(prompts).toContain("safe_github_development");
+    expect(prompts).toContain("development_workflow");
+
+    const prompt = await client.getPrompt({
+      name: "development_workflow",
+      arguments: {
+        repository: "acme/demo",
+        task: "Fix the parser without changing unrelated behavior",
+        workingDirectory: "/tmp/demo",
+      },
+    });
+    const text = JSON.stringify(prompt.messages);
+    expect(text).toContain("acme/demo");
+    expect(text).toContain("Fix the parser without changing unrelated behavior");
+    expect(text).toContain("/tmp/demo");
+    expect(text).toMatch(/AGENTS/);
+    expect(text).toMatch(/targeted tests/i);
+    expect(text).toMatch(/Git state|git review/i);
+
+    await client.close();
+    await server.close();
+  });
+});
+
+
+describe("visual MCP transport", () => {
+  it("requires local:read for screenshot capture", async () => {
+    const gateway = fakeLocalGateway();
+    const { client, server } = await connectedClient([], {}, gateway);
+    const result = await client.callTool({
+      name: "local_capture_screen",
+      arguments: { display: "main", includeCursor: false, maxEdge: 1600 },
+    });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.structuredContent)).toContain("insufficient_scope");
+    await client.close();
+    await server.close();
+  });
+
+  it("returns screenshot bytes as an MCP image block without duplicating base64 in structured content", async () => {
+    const imageBase64 = Buffer.from("fake-png-bytes").toString("base64");
+    const gateway: LocalToolGateway = {
+      status() {
+        return { configured: true, connected: true, agentId: "mac-test", lastSeenAt: new Date().toISOString(), queuedRequests: 0, pendingRequests: 0 };
+      },
+      async request(method) {
+        if (method === "visual.captureScreen") {
+          return {
+            imageBase64,
+            mimeType: "image/png",
+            display: "main",
+            width: 1200,
+            height: 800,
+            byteLength: 14,
+          };
+        }
+        return {};
+      },
+    };
+    const { client, server } = await connectedClient(["local:read"], {}, gateway);
+
+    const result = await client.callTool({
+      name: "local_capture_screen",
+      arguments: { display: "main", includeCursor: false, maxEdge: 1600 },
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.content).toEqual([
+      { type: "image", data: imageBase64, mimeType: "image/png" },
+    ]);
+    expect(JSON.stringify(result.structuredContent)).not.toContain(imageBase64);
+    expect(result.structuredContent).toMatchObject({
+      display: "main",
+      width: 1200,
+      height: 800,
+      byteLength: 14,
+      mimeType: "image/png",
+    });
+
+    await client.close();
+    await server.close();
+  });
+});
+
+describe("tool safety annotations", () => {
+  it("keeps observation tools read-only and high-impact tools destructive", async () => {
+    const gateway = fakeLocalGateway();
+    const { client, server } = await connectedClient(
+      ["github:read", "github:write", "github:merge", "local:read", "local:write"],
+      { allowMerge: true },
+      gateway,
+    );
+    const tools = (await client.listTools()).tools;
+    const annotations = (name: string) => tools.find((tool) => tool.name === name)?.annotations;
+
+    expect(annotations("local_capture_screen")).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    expect(annotations("local_get_ui_context")).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    expect(annotations("local_get_project_context")).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    expect(annotations("local_code_search")).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    expect(annotations("local_git_review")).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    expect(annotations("github_get_check_status")).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    expect(annotations("github_list_workflow_runs")).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    expect(annotations("github_get_workflow_run")).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+
+    expect(annotations("local_delete")).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    expect(annotations("local_process_kill")).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    expect(annotations("github_create_change")).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    expect(annotations("github_merge_pull_request")).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+
+    await client.close();
+    await server.close();
   });
 });

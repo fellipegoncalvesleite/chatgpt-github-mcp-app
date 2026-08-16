@@ -8,16 +8,24 @@ import {
   searchLocalFiles,
   writeLocalTextFile,
 } from "./filesystem.js";
+import { getLocalCapabilities } from "./capabilities.js";
+import { searchCode } from "./code-search.js";
+import { reviewGit } from "./git-review.js";
 import { killLocalProcess, listLocalProcesses } from "./processes.js";
+import { getProjectContext } from "./project-context.js";
 import { LocalExecutionError } from "./protocol.js";
 import { runShell } from "./shell.js";
 import { TerminalManager } from "./terminal.js";
+import type { LocalVisualService } from "./visual.js";
 
 export type LocalExecutionServices = {
   terminal: TerminalManager;
   maxOutputBytes: number;
   maxFileBytes: number;
   maxCommandTimeoutMs: number;
+  visual?: LocalVisualService;
+  maxScreenshotBytes?: number;
+  maxScreenshotEdge?: number;
 };
 
 function objectParams(value: unknown): Record<string, unknown> {
@@ -59,6 +67,15 @@ function numberParam(
   return integer;
 }
 
+function stringArrayParam(params: Record<string, unknown>, key: string): string[] | undefined {
+  const value = params[key];
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim())) {
+    throw new LocalExecutionError("invalid_params", `${key} must be an array of non-empty strings`);
+  }
+  return value as string[];
+}
+
 function envParam(params: Record<string, unknown>): Record<string, string> | undefined {
   const value = params.env;
   if (value === undefined) return undefined;
@@ -90,6 +107,9 @@ export async function dispatchLocalRequest(
   const params = objectParams(rawParams);
 
   switch (method) {
+    case "system.capabilities":
+      return getLocalCapabilities();
+
     case "system.info":
       return {
         hostname: hostname(),
@@ -141,6 +161,48 @@ export async function dispatchLocalRequest(
         stringParam(params, "query")!,
         { maxResults: numberParam(params, "maxResults", { fallback: 50, min: 1, max: 500 }) ?? 50 },
       );
+
+    case "visual.uiContext": {
+      if (!services.visual) throw new LocalExecutionError("visual_unavailable", "Visual inspection is not configured on this local agent");
+      return await services.visual.getUiContext();
+    }
+
+    case "visual.captureScreen": {
+      if (!services.visual) throw new LocalExecutionError("visual_unavailable", "Visual inspection is not configured on this local agent");
+      const rawDisplay = params.display;
+      const display = rawDisplay === undefined || rawDisplay === "main"
+        ? "main"
+        : numberParam(params, "display", { min: 1, max: 32 })!;
+      const serviceMaxEdge = services.maxScreenshotEdge ?? 1600;
+      const requestedMaxEdge = numberParam(params, "maxEdge", { fallback: serviceMaxEdge, min: 256, max: 16_384 }) ?? serviceMaxEdge;
+      return await services.visual.captureScreen({
+        display,
+        includeCursor: booleanParam(params, "includeCursor", false),
+        maxEdge: Math.min(requestedMaxEdge, serviceMaxEdge),
+        maxBytes: services.maxScreenshotBytes ?? 1_500_000,
+      });
+    }
+
+    case "development.projectContext":
+      return await getProjectContext(stringParam(params, "workingDirectory")!);
+
+    case "development.codeSearch":
+      return await searchCode({
+        root: stringParam(params, "root")!,
+        query: stringParam(params, "query")!,
+        globs: stringArrayParam(params, "globs") ?? [],
+        maxResults: numberParam(params, "maxResults", { fallback: 50, min: 1, max: 500 }) ?? 50,
+        contextLines: numberParam(params, "contextLines", { fallback: 1, min: 0, max: 5 }) ?? 1,
+        regex: booleanParam(params, "regex", false),
+        caseSensitive: booleanParam(params, "caseSensitive", true),
+      });
+
+    case "development.gitReview":
+      return await reviewGit({
+        workingDirectory: stringParam(params, "workingDirectory")!,
+        includePatch: booleanParam(params, "includePatch", false),
+        maxPatchBytes: numberParam(params, "maxPatchBytes", { fallback: 200_000, min: 1_000, max: 2_000_000 }) ?? 200_000,
+      });
 
     case "shell.run": {
       const timeoutMs = Math.min(

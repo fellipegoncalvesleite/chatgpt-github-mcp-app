@@ -48,6 +48,8 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     localAgentMaxTerminalBytes: 100_000,
     localAgentMaxSessions: 4,
     localAgentMaxCommandTimeoutMs: 5_000,
+    localAgentMaxScreenshotBytes: 1_500_000,
+    localAgentScreenshotMaxEdge: 1600,
     ...overrides,
   };
 }
@@ -106,6 +108,19 @@ export function fakeGitHubService(overrides: Partial<GitHubToolService> = {}): G
         url: "https://github.com/acme/demo/pull/1",
         body: null,
         files: [],
+      };
+    },
+    async getCheckStatus(repository, ref) {
+      return { repository, ref, state: "passing" as const, checkRuns: [], commitStatus: { state: "success", totalCount: 1 } };
+    },
+    async listWorkflowRuns() {
+      return { totalCount: 0, runs: [] };
+    },
+    async getWorkflowRun(_repository, runId) {
+      return {
+        id: runId, name: "CI", runNumber: 1, attempt: 1, event: "pull_request", status: "completed", conclusion: "success",
+        headBranch: "chatgpt/demo", headSha: "a".repeat(40), url: "https://github.com/acme/demo/actions/runs/1",
+        createdAt: "2026-08-16T20:00:00Z", updatedAt: "2026-08-16T20:01:00Z", workflowId: 1,
       };
     },
     async createChange(input) {

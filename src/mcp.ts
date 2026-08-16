@@ -8,6 +8,7 @@ import type { GitHubService } from "./github/service.js";
 import { registerGmailTools, type GmailToolService } from "./gmail/mcp-tools.js";
 import type { LocalToolGateway } from "./local/gateway.js";
 import { registerLocalTools } from "./local/mcp-tools.js";
+import { DEVELOPMENT_INSTRUCTIONS, developmentWorkflowText } from "./workflows/development.js";
 
 export type GitHubToolService = Pick<
   GitHubService,
@@ -17,6 +18,9 @@ export type GitHubToolService = Pick<
   | "readFile"
   | "listPullRequests"
   | "getPullRequest"
+  | "getCheckStatus"
+  | "listWorkflowRuns"
+  | "getWorkflowRun"
   | "createChange"
   | "commentPullRequest"
   | "mergePullRequest"
@@ -136,15 +140,7 @@ export function createGitHubMcpServer(dependencies: {
     },
     {
       capabilities: { logging: {} },
-      instructions: [
-        "Use GitHub read tools to inspect the relevant repository and files before proposing GitHub changes.",
-        "Prefer one github_create_change call containing all related file upserts/deletions so the result is one atomic commit.",
-        "github_create_change creates a chatgpt/* branch and Pull Request by default; do not request direct writes to the default branch.",
-        "When local tools are available, they operate on the connected Mac under the user's macOS account and may execute arbitrary shell commands.",
-        "When Gmail tools are available, use search/list tools before reading individual messages and never expose Google OAuth credentials or tokens.",
-        "Gmail v1 intentionally has no trash or permanent-delete tools.",
-        "Never ask for or expose GitHub App private keys, OAuth secrets, LOCAL_AGENT_TOKEN, passwords, .env files, or other protected credentials.",
-      ].join(" "),
+      instructions: DEVELOPMENT_INSTRUCTIONS.join(" "),
     },
   );
 
@@ -263,6 +259,68 @@ export function createGitHubMcpServer(dependencies: {
   );
 
   server.registerTool(
+    "github_get_check_status",
+    {
+      title: "Get GitHub check status",
+      description: "Read Check Runs and combined commit status for a branch, tag, or commit ref. This does not trigger, rerun, cancel, or modify CI.",
+      inputSchema: z.object({
+        repository: repositorySchema,
+        ref: z.string().min(1).max(200),
+      }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ repository, ref }, extra) => auditedTool(audit, "github_get_check_status", extra, { repository }, async () => {
+      requireScope(extra, "github:read");
+      return await github.getCheckStatus(repository, ref);
+    }),
+  );
+
+  server.registerTool(
+    "github_list_workflow_runs",
+    {
+      title: "List GitHub Actions workflow runs",
+      description: "List recent GitHub Actions runs for an allowed repository, optionally filtered by branch, event, or status. Read-only.",
+      inputSchema: z.object({
+        repository: repositorySchema,
+        branch: z.string().min(1).max(255).optional(),
+        event: z.string().min(1).max(100).optional(),
+        status: z.enum([
+          "completed", "action_required", "cancelled", "failure", "neutral", "skipped", "stale",
+          "success", "timed_out", "in_progress", "queued", "requested", "waiting", "pending",
+        ]).optional(),
+        limit: z.number().int().min(1).max(100).default(20),
+      }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ repository, branch, event, status, limit }, extra) => auditedTool(audit, "github_list_workflow_runs", extra, { repository }, async () => {
+      requireScope(extra, "github:read");
+      return await github.listWorkflowRuns(repository, {
+        ...(branch === undefined ? {} : { branch }),
+        ...(event === undefined ? {} : { event }),
+        ...(status === undefined ? {} : { status }),
+        limit,
+      });
+    }),
+  );
+
+  server.registerTool(
+    "github_get_workflow_run",
+    {
+      title: "Get GitHub Actions workflow run",
+      description: "Read one GitHub Actions workflow run and its conclusion. This tool does not mutate the run.",
+      inputSchema: z.object({
+        repository: repositorySchema,
+        runId: z.number().int().positive(),
+      }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ repository, runId }, extra) => auditedTool(audit, "github_get_workflow_run", extra, { repository }, async () => {
+      requireScope(extra, "github:read");
+      return await github.getWorkflowRun(repository, runId);
+    }),
+  );
+
+  server.registerTool(
     "github_create_change",
     {
       title: "Create an atomic GitHub code change and Pull Request",
@@ -374,12 +432,45 @@ export function createGitHubMcpServer(dependencies: {
   }
 
   if (localGateway) {
-    registerLocalTools(server, { gateway: localGateway, audit });
+    registerLocalTools(server, {
+      gateway: localGateway,
+      audit,
+      bridgeCapabilities: {
+        githubMergeEnabled: config.allowMerge,
+        gmailConfigured: gmail !== undefined,
+      },
+    });
   }
 
   if (gmail) {
     registerGmailTools(server, { gmail, audit });
   }
+
+  server.registerPrompt(
+    "development_workflow",
+    {
+      title: "Codex-style development workflow",
+      description: "Inspect, plan, implement, test, review Git state, optionally verify visual context and CI, then report evidence.",
+      argsSchema: {
+        repository: repositorySchema,
+        task: z.string().min(1).max(20_000),
+        workingDirectory: z.string().min(1).max(32_768).optional(),
+      },
+    },
+    async ({ repository, task, workingDirectory }) => ({
+      messages: [{
+        role: "user",
+        content: {
+          type: "text",
+          text: developmentWorkflowText({
+            repository,
+            task,
+            ...(workingDirectory === undefined ? {} : { workingDirectory }),
+          }),
+        },
+      }],
+    }),
+  );
 
   server.registerPrompt(
     "safe_github_development",

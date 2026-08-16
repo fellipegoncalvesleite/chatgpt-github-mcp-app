@@ -20,6 +20,8 @@ describe("Gmail configuration", () => {
   it("keeps Gmail disabled when all Gmail settings are absent", () => {
     const config = loadConfig(baseEnv());
     expect(gmailConfigured(config)).toBe(false);
+    expect(config.localAgentMaxScreenshotBytes).toBe(1_500_000);
+    expect(config.localAgentScreenshotMaxEdge).toBe(1600);
     expect(OAUTH_SCOPES).toContain("gmail:read");
     expect(OAUTH_SCOPES).toContain("gmail:write");
   });

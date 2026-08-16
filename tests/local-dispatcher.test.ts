@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -90,6 +91,267 @@ describe("local dispatcher", () => {
     expect(info.nodeVersion).toMatch(/^v/);
     const processes = await dispatchLocalRequest("process.list", { limit: 10 }, runtime) as { processes: unknown[] };
     expect(processes.processes.length).toBeGreaterThan(0);
+    runtime.terminal.closeAll();
+  });
+});
+
+
+describe("local development intelligence", () => {
+  async function createGitFixture() {
+    const directory = await mkdtemp(join(tmpdir(), "local-development-"));
+    created.push(directory);
+    await mkdir(join(directory, "src"), { recursive: true });
+    await writeFile(join(directory, "package.json"), JSON.stringify({
+      scripts: { test: "vitest run", build: "tsc -p tsconfig.json", lint: "eslint ." },
+    }, null, 2));
+    await writeFile(join(directory, "package-lock.json"), "{}\n");
+    await writeFile(join(directory, "AGENTS.md"), "root rules\n");
+    await writeFile(join(directory, "src", "AGENTS.override.md"), "src rules\n");
+    await writeFile(join(directory, "src", "index.ts"), "export const createGitHubMcpServer = true;\n");
+    await writeFile(join(directory, ".gitignore"), "node_modules/\n");
+    execFileSync("git", ["init", "-b", "main"], { cwd: directory });
+    execFileSync("git", ["config", "user.email", "tests@example.com"], { cwd: directory });
+    execFileSync("git", ["config", "user.name", "Tests"], { cwd: directory });
+    execFileSync("git", ["add", "."], { cwd: directory });
+    execFileSync("git", ["commit", "-m", "initial"], { cwd: directory });
+    return await realpath(directory);
+  }
+
+  it("summarizes repository context conservatively from project files and Git state", async () => {
+    const directory = await createGitFixture();
+    await writeFile(join(directory, "src", "index.ts"), "export const createGitHubMcpServer = false;\n");
+    await writeFile(join(directory, "untracked.txt"), "new\n");
+    const runtime = services();
+
+    await expect(dispatchLocalRequest("development.projectContext", {
+      workingDirectory: join(directory, "src"),
+    }, runtime)).resolves.toMatchObject({
+      repositoryRoot: directory,
+      workingDirectory: join(directory, "src"),
+      currentBranch: "main",
+      dirty: true,
+      packageManager: "npm",
+      packageFiles: expect.arrayContaining(["package.json", "package-lock.json"]),
+      testCommands: ["npm test"],
+      buildCommands: ["npm run build"],
+      lintCommands: ["npm run lint"],
+      AGENTSFiles: expect.arrayContaining([join(directory, "AGENTS.md"), join(directory, "src", "AGENTS.override.md")]),
+      modifiedFiles: expect.arrayContaining(["src/index.ts"]),
+      untrackedFiles: expect.arrayContaining(["untracked.txt"]),
+    });
+    runtime.terminal.closeAll();
+  });
+
+  it("searches source text with line numbers while ignoring dependency directories", async () => {
+    const directory = await createGitFixture();
+    await mkdir(join(directory, "node_modules", "ignored"), { recursive: true });
+    await writeFile(join(directory, "node_modules", "ignored", "copy.ts"), "createGitHubMcpServer\n");
+    const runtime = services();
+
+    const result = await dispatchLocalRequest("development.codeSearch", {
+      root: directory,
+      query: "createGitHubMcpServer",
+      maxResults: 10,
+      contextLines: 1,
+    }, runtime) as { backend: string; matches: Array<{ path: string; line: number; text: string }> };
+
+    expect(["rg", "git-grep", "node"]).toContain(result.backend);
+    expect(result.matches).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: join(directory, "src", "index.ts"), line: 1 }),
+    ]));
+    expect(result.matches.some((match) => match.path.includes("node_modules"))).toBe(false);
+    runtime.terminal.closeAll();
+  });
+
+  it("returns structured Git review state and a bounded optional patch", async () => {
+    const directory = await createGitFixture();
+    await writeFile(join(directory, "src", "index.ts"), "export const createGitHubMcpServer = false;\n");
+    execFileSync("git", ["add", "src/index.ts"], { cwd: directory });
+    await writeFile(join(directory, "AGENTS.md"), "changed root rules\n");
+    await writeFile(join(directory, "untracked.txt"), "new\n");
+    const runtime = services();
+
+    await expect(dispatchLocalRequest("development.gitReview", {
+      workingDirectory: directory,
+      includePatch: true,
+      maxPatchBytes: 10_000,
+    }, runtime)).resolves.toMatchObject({
+      repositoryRoot: directory,
+      branch: "main",
+      headSha: expect.stringMatching(/^[0-9a-f]{40}$/),
+      stagedFiles: expect.arrayContaining(["src/index.ts"]),
+      unstagedFiles: expect.arrayContaining(["AGENTS.md"]),
+      untrackedFiles: expect.arrayContaining(["untracked.txt"]),
+      conflicts: [],
+      patchTruncated: false,
+      patch: expect.stringContaining("createGitHubMcpServer"),
+    });
+    runtime.terminal.closeAll();
+  });
+
+  it("detects a Python project without inventing a package manager or commands", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "local-python-project-"));
+    created.push(directory);
+    await writeFile(join(directory, "pyproject.toml"), "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+    execFileSync("git", ["init", "-b", "main"], { cwd: directory });
+    execFileSync("git", ["config", "user.email", "tests@example.com"], { cwd: directory });
+    execFileSync("git", ["config", "user.name", "Tests"], { cwd: directory });
+    execFileSync("git", ["add", "."], { cwd: directory });
+    execFileSync("git", ["commit", "-m", "initial"], { cwd: directory });
+    const canonical = await realpath(directory);
+    const runtime = services();
+
+    await expect(dispatchLocalRequest("development.projectContext", {
+      workingDirectory: canonical,
+    }, runtime)).resolves.toMatchObject({
+      repositoryRoot: canonical,
+      currentBranch: "main",
+      dirty: false,
+      detectedLanguages: expect.arrayContaining(["Python"]),
+      packageManager: null,
+      packageFiles: ["pyproject.toml"],
+      testCommands: [],
+      buildCommands: [],
+      lintCommands: [],
+    });
+    runtime.terminal.closeAll();
+  });
+
+  it("code search respects .gitignore, Unicode, binary exclusion, and result limits", async () => {
+    const directory = await createGitFixture();
+    await writeFile(join(directory, ".gitignore"), "node_modules/\nignored.txt\n");
+    await writeFile(join(directory, "ignored.txt"), "needle should never appear\n");
+    await writeFile(join(directory, "src", "unicode.ts"), "export const café = 'needle αβγ';\n");
+    await writeFile(join(directory, "src", "second.ts"), "export const second = 'needle';\n");
+    await writeFile(join(directory, "src", "binary.bin"), Buffer.concat([Buffer.from("needle"), Buffer.from([0]), Buffer.from("binary")]));
+    const runtime = services();
+
+    const result = await dispatchLocalRequest("development.codeSearch", {
+      root: directory,
+      query: "needle",
+      maxResults: 1,
+      contextLines: 0,
+    }, runtime) as { matches: Array<{ path: string; text: string }>; truncated: boolean };
+
+    expect(result.matches).toHaveLength(1);
+    expect(result.truncated).toBe(true);
+    expect(result.matches[0]?.path).not.toContain("ignored.txt");
+    expect(result.matches[0]?.path).not.toContain("binary.bin");
+
+    const unicode = await dispatchLocalRequest("development.codeSearch", {
+      root: directory,
+      query: "αβγ",
+      maxResults: 10,
+      contextLines: 0,
+    }, runtime) as { matches: Array<{ path: string; text: string }> };
+    expect(unicode.matches).toEqual([
+      expect.objectContaining({ path: join(directory, "src", "unicode.ts"), text: expect.stringContaining("αβγ") }),
+    ]);
+    runtime.terminal.closeAll();
+  });
+
+  it("reports a clean Git repository and truncates oversized patches", async () => {
+    const directory = await createGitFixture();
+    const runtime = services();
+    const clean = await dispatchLocalRequest("development.gitReview", {
+      workingDirectory: directory,
+      includePatch: true,
+      maxPatchBytes: 1_000,
+    }, runtime) as { stagedFiles: string[]; unstagedFiles: string[]; untrackedFiles: string[]; conflicts: string[]; patch: string; patchTruncated: boolean };
+    expect(clean).toMatchObject({ stagedFiles: [], unstagedFiles: [], untrackedFiles: [], conflicts: [], patch: "", patchTruncated: false });
+
+    await writeFile(join(directory, "src", "index.ts"), `export const text = ${JSON.stringify("x".repeat(20_000))};\n`);
+    const changed = await dispatchLocalRequest("development.gitReview", {
+      workingDirectory: directory,
+      includePatch: true,
+      maxPatchBytes: 1_000,
+    }, runtime) as { diffStat: string; patch: string; patchTruncated: boolean };
+    expect(changed.diffStat).toContain("src/index.ts");
+    expect(changed.patchTruncated).toBe(true);
+    expect(Buffer.byteLength(changed.patch, "utf8")).toBeLessThanOrEqual(1_000);
+    runtime.terminal.closeAll();
+  });
+});
+
+
+
+  it("reports local and visual capabilities conservatively", async () => {
+    const runtime = services();
+    const result = await dispatchLocalRequest("system.capabilities", {}, runtime) as {
+      platform: string;
+      local: Record<string, boolean>;
+      vision: { uiContext: boolean; screenshots: boolean; screenRecordingPermission: string };
+    };
+
+    expect(result.local).toMatchObject({
+      filesystemRead: true,
+      filesystemWrite: true,
+      shell: true,
+      terminal: true,
+      processes: true,
+      projectContext: true,
+      codeSearch: true,
+      gitReview: true,
+    });
+    expect(result.vision.screenRecordingPermission).toBe("unknown");
+    expect(result.vision.uiContext).toBe(result.platform === "darwin");
+    expect(result.vision.screenshots).toBe(result.platform === "darwin");
+    runtime.terminal.closeAll();
+  });
+
+describe("local visual dispatch", () => {
+  it("dispatches read-only UI context through an injected visual service", async () => {
+    const runtime = {
+      ...services(),
+      visual: {
+        async getUiContext() {
+          return { frontmostApplication: "Visual Studio Code", bundleId: "com.microsoft.VSCode", windowTitle: "mcp.ts" };
+        },
+        async captureScreen() {
+          throw new Error("not used");
+        },
+      },
+      maxScreenshotBytes: 1_500_000,
+      maxScreenshotEdge: 1600,
+    } as LocalExecutionServices;
+
+    await expect(dispatchLocalRequest("visual.uiContext", {}, runtime)).resolves.toEqual({
+      frontmostApplication: "Visual Studio Code",
+      bundleId: "com.microsoft.VSCode",
+      windowTitle: "mcp.ts",
+    });
+    runtime.terminal.closeAll();
+  });
+
+  it("dispatches bounded screen capture options through the visual service", async () => {
+    const calls: unknown[] = [];
+    const runtime = {
+      ...services(),
+      visual: {
+        async getUiContext() { return { frontmostApplication: null, bundleId: null, windowTitle: null }; },
+        async captureScreen(options: unknown) {
+          calls.push(options);
+          return {
+            imageBase64: Buffer.from("png").toString("base64"),
+            mimeType: "image/png",
+            display: "main",
+            width: 1200,
+            height: 800,
+            byteLength: 3,
+          };
+        },
+      },
+      maxScreenshotBytes: 1_500_000,
+      maxScreenshotEdge: 1600,
+    } as LocalExecutionServices;
+
+    const result = await dispatchLocalRequest("visual.captureScreen", {
+      display: "main",
+      includeCursor: false,
+      maxEdge: 2400,
+    }, runtime) as { width: number };
+    expect(result.width).toBe(1200);
+    expect(calls).toEqual([{ display: "main", includeCursor: false, maxEdge: 1600, maxBytes: 1_500_000 }]);
     runtime.terminal.closeAll();
   });
 });

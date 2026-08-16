@@ -81,14 +81,121 @@ async function localTool(
   }
 }
 
+function screenCaptureResult(value: unknown): {
+  imageBase64: string;
+  mimeType: "image/png";
+  display: "main" | number;
+  width: number;
+  height: number;
+  byteLength: number;
+} {
+  if (typeof value !== "object" || value === null) {
+    throw new AppError("invalid_local_result", "Local screenshot response is not an object", 502);
+  }
+  const record = value as Record<string, unknown>;
+  const display = record.display;
+  if (
+    typeof record.imageBase64 !== "string"
+    || record.mimeType !== "image/png"
+    || (display !== "main" && typeof display !== "number")
+    || typeof record.width !== "number"
+    || typeof record.height !== "number"
+    || typeof record.byteLength !== "number"
+  ) {
+    throw new AppError("invalid_local_result", "Local screenshot response has an invalid shape", 502);
+  }
+  return {
+    imageBase64: record.imageBase64,
+    mimeType: "image/png",
+    display,
+    width: record.width,
+    height: record.height,
+    byteLength: record.byteLength,
+  };
+}
+
+async function localImageTool(
+  audit: AuditLogger,
+  tool: string,
+  extra: ToolExtra,
+  details: Record<string, unknown>,
+  action: () => Promise<unknown>,
+) {
+  try {
+    const result = screenCaptureResult(await action());
+    await audit.write({
+      ...actorFrom(extra),
+      tool,
+      outcome: "success",
+      details,
+    });
+    const { imageBase64, ...metadata } = result;
+    return {
+      content: [{ type: "image" as const, data: imageBase64, mimeType: result.mimeType }],
+      structuredContent: metadata,
+    };
+  } catch (error) {
+    const denied = error instanceof AppError && error.status >= 400 && error.status < 500;
+    await audit.write({
+      ...actorFrom(extra),
+      tool,
+      outcome: denied ? "denied" : "error",
+      details: {
+        ...details,
+        code: error instanceof AppError ? error.code : "internal_error",
+        message: toErrorMessage(error),
+      },
+    });
+    return errorResult(error);
+  }
+}
+
 const pathSchema = z.string().min(1).max(32_768);
 const envSchema = z.record(z.string(), z.string());
 
 export function registerLocalTools(
   server: McpServer,
-  dependencies: { gateway: LocalToolGateway; audit: AuditLogger },
+  dependencies: {
+    gateway: LocalToolGateway;
+    audit: AuditLogger;
+    bridgeCapabilities?: { githubMergeEnabled: boolean; gmailConfigured: boolean };
+  },
 ): void {
   const { gateway, audit } = dependencies;
+
+  server.registerTool(
+    "local_get_capabilities",
+    {
+      title: "Get bridge capabilities",
+      description: "Report the caller's effective GitHub, local Mac, visual, and Gmail capabilities before proposing manual workarounds. Screen Recording permission remains unknown until a task-driven capture is attempted.",
+      inputSchema: z.object({}),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (_input, extra) => localTool(audit, "local_get_capabilities", extra, {}, async () => {
+      requireLocalScope(extra, "local:read");
+      const raw = await gateway.request("system.capabilities", {});
+      if (typeof raw !== "object" || raw === null) {
+        throw new AppError("invalid_local_result", "Local capability response is not an object", 502);
+      }
+      const local = raw as { local?: unknown; vision?: unknown; platform?: unknown };
+      const scopes = extra.authInfo?.scopes ?? [];
+      const bridge = dependencies.bridgeCapabilities ?? { githubMergeEnabled: false, gmailConfigured: false };
+      return {
+        GitHub: {
+          read: scopes.includes("github:read"),
+          write: scopes.includes("github:write"),
+          merge: bridge.githubMergeEnabled && scopes.includes("github:merge"),
+        },
+        Local: local.local ?? {},
+        Vision: local.vision ?? {},
+        Gmail: {
+          read: bridge.gmailConfigured && scopes.includes("gmail:read"),
+          send: bridge.gmailConfigured && scopes.includes("gmail:write"),
+        },
+        platform: local.platform ?? null,
+      };
+    }),
+  );
 
   server.registerTool(
     "local_get_info",
@@ -103,6 +210,92 @@ export function registerLocalTools(
       const status = gateway.status();
       if (!status.connected) return { gateway: status, machine: null };
       return { gateway: status, machine: await gateway.request("system.info", {}) };
+    }),
+  );
+
+  server.registerTool(
+    "local_get_ui_context",
+    {
+      title: "Get frontmost Mac UI context",
+      description: "Read the frontmost application, bundle identifier, and best-effort window title without activating, focusing, clicking, or typing in any application.",
+      inputSchema: z.object({}),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (_input, extra) => localTool(audit, "local_get_ui_context", extra, {}, async () => {
+      requireLocalScope(extra, "local:read");
+      return await gateway.request("visual.uiContext", {});
+    }),
+  );
+
+  server.registerTool(
+    "local_capture_screen",
+    {
+      title: "Capture one Mac screenshot",
+      description: "Capture one bounded screenshot for task-driven visual inspection. This is read-only and does not click, type, focus applications, or continuously monitor the screen.",
+      inputSchema: z.object({
+        display: z.union([z.literal("main"), z.number().int().min(1).max(32)]).default("main"),
+        includeCursor: z.boolean().default(false),
+        maxEdge: z.number().int().min(256).max(16_384).default(1600),
+      }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    async (input, extra) => localImageTool(audit, "local_capture_screen", extra, { display: input.display }, async () => {
+      requireLocalScope(extra, "local:read");
+      return await gateway.request("visual.captureScreen", input);
+    }),
+  );
+
+  server.registerTool(
+    "local_get_project_context",
+    {
+      title: "Get local project context",
+      description: "Summarize the current Git repository, branch/dirty state, detected project metadata, discoverable commands, and applicable AGENTS instruction files in one read-only call.",
+      inputSchema: z.object({ workingDirectory: pathSchema }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ workingDirectory }, extra) => localTool(audit, "local_get_project_context", extra, { workingDirectory }, async () => {
+      requireLocalScope(extra, "local:read");
+      return await gateway.request("development.projectContext", { workingDirectory });
+    }),
+  );
+
+  server.registerTool(
+    "local_code_search",
+    {
+      title: "Search local source code",
+      description: "Search repository text quickly with path/line/context results. Prefers ripgrep when available and otherwise uses a Git-aware fallback that respects ignored files.",
+      inputSchema: z.object({
+        root: pathSchema,
+        query: z.string().min(1).max(10_000),
+        globs: z.array(z.string().min(1).max(1_000)).max(50).optional(),
+        maxResults: z.number().int().min(1).max(500).default(50),
+        contextLines: z.number().int().min(0).max(5).default(1),
+        regex: z.boolean().default(false),
+        caseSensitive: z.boolean().default(true),
+      }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (input, extra) => localTool(audit, "local_code_search", extra, { root: input.root, query: input.query }, async () => {
+      requireLocalScope(extra, "local:read");
+      return await gateway.request("development.codeSearch", input);
+    }),
+  );
+
+  server.registerTool(
+    "local_git_review",
+    {
+      title: "Review local Git state",
+      description: "Return structured branch, upstream, staged/unstaged/untracked/conflict state and diff stats, with an optional bounded patch for final verification.",
+      inputSchema: z.object({
+        workingDirectory: pathSchema,
+        includePatch: z.boolean().default(false),
+        maxPatchBytes: z.number().int().min(1_000).max(2_000_000).default(200_000),
+      }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (input, extra) => localTool(audit, "local_git_review", extra, { workingDirectory: input.workingDirectory }, async () => {
+      requireLocalScope(extra, "local:read");
+      return await gateway.request("development.gitReview", input);
     }),
   );
 

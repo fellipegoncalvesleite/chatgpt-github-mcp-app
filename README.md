@@ -26,6 +26,9 @@ The Mac initiates the connection using authenticated long polling. You do not ex
 - `github_read_file`
 - `github_list_pull_requests`
 - `github_get_pull_request`
+- `github_get_check_status`
+- `github_list_workflow_runs`
+- `github_get_workflow_run`
 - `github_create_change`
 - `github_comment_pull_request`
 - optional `github_merge_pull_request`
@@ -57,6 +60,12 @@ Gmail v1 intentionally exposes no trash/untrash or permanent-delete tools. The u
 Read tools:
 
 - `local_get_info`
+- `local_get_capabilities`
+- `local_get_project_context`
+- `local_code_search`
+- `local_git_review`
+- `local_get_ui_context`
+- `local_capture_screen`
 - `local_list_directory`
 - `local_read_file`
 - `local_search_files`
@@ -77,6 +86,32 @@ Mutating/execution tools:
 - `local_process_kill`
 
 The persistent terminal is PTY-backed on macOS through the native `script(1)` utility, which is enough for interactive shells, REPLs, debuggers, and long-running commands. The dependency-free v1 does not expose a true PTY resize ioctl; `local_terminal_resize` is best-effort and reports that limitation.
+
+### Coding-agent workflow
+
+The MCP publishes a `development_workflow` prompt for non-trivial coding work. Its intended loop is:
+
+```text
+understand → discover AGENTS instructions → inspect → plan → implement → targeted tests → diagnose → broader verification → Git review → visual verification when relevant → CI review → report evidence
+```
+
+Repository instructions follow Codex-style discovery: search for `AGENTS.override.md` and `AGENTS.md` from the repository root toward the target files. Instructions closer to a target file are more specific and override broader repository instructions; direct user/system instructions remain higher priority.
+
+`safe_github_development` remains available for backwards compatibility. GitHub API writes still use managed `chatgpt/*` branches and Pull Requests rather than silently adopting a different Git workflow.
+
+The workflow prefers `local_get_project_context`, `local_code_search`, and `local_git_review` over repeated shell/file calls when those tools can answer the question directly. `local_get_capabilities` should be checked before asking the user to perform a manual workaround.
+
+### Read-only visual inspection
+
+Visual access is deliberately **eyes without hands**:
+
+- `local_get_ui_context` reads the frontmost application/bundle ID and a best-effort front-window title without activating or focusing an app.
+- `local_capture_screen` captures one task-driven screenshot and returns an MCP image block, not merely a local path.
+- screenshots are bounded by `LOCAL_AGENT_MAX_SCREENSHOT_BYTES` (default `1500000`) and `LOCAL_AGENT_SCREENSHOT_MAX_EDGE` (default `1600`); temporary files are deleted after each request.
+- macOS Screen Recording permission is never bypassed. If capture is denied, the tool returns `screen_recording_permission_required`. Window-title metadata is best-effort and may be `null` when macOS denies access.
+- the bridge does **not** add mouse clicks, keyboard typing, arbitrary UI automation, continuous screenshots, webcam access, microphone access, or background surveillance.
+
+Prefer source code, DOM/structured data, terminal output, and logs when they provide more precise evidence than a screenshot.
 
 ## Requirements
 
@@ -108,6 +143,9 @@ Repository permissions:
 - Contents: **Read and write**
 - Pull requests: **Read and write**
 - Metadata: **Read-only**
+- Checks: **Read-only**
+- Actions: **Read-only**
+- Commit statuses: **Read-only**
 
 Disable webhooks unless you add a separate feature that needs them. Install the app only on repositories ChatGPT should be able to access.
 
@@ -133,6 +171,8 @@ GITHUB_ALLOWED_REPOSITORIES=owner/repo,owner/another-repo
 OAUTH_SIGNING_SECRET=...
 OAUTH_ADMIN_PASSWORD_HASH=scrypt:...
 LOCAL_AGENT_TOKEN=...
+LOCAL_AGENT_MAX_SCREENSHOT_BYTES=1500000
+LOCAL_AGENT_SCREENSHOT_MAX_EDGE=1600
 
 # Optional Gmail: configure all four together
 GMAIL_CLIENT_ID=...
@@ -224,6 +264,8 @@ Create `~/.config/chatgpt-local-agent.env`:
 ```env
 LOCAL_AGENT_GATEWAY_URL=https://your-public-host.example.com
 LOCAL_AGENT_TOKEN=the-exact-same-token-configured-on-the-gateway
+LOCAL_AGENT_MAX_SCREENSHOT_BYTES=1500000
+LOCAL_AGENT_SCREENSHOT_MAX_EDGE=1600
 ```
 
 Lock it down:
@@ -238,7 +280,7 @@ Run the agent in the foreground for the first test:
 npm run local-agent
 ```
 
-Then call `local_get_info` from ChatGPT. A successful response should show the Mac hostname, home directory, shell, Node version, and `connected: true`.
+Then call `local_get_info` from ChatGPT. A successful response should show the Mac hostname, home directory, shell, Node version, and `connected: true`. `local_get_capabilities` reports which bridge features are usable with the caller's current MCP scopes; it deliberately reports Screen Recording permission as `unknown` until a task actually needs a capture.
 
 The agent does not impose its own path sandbox, but macOS privacy/TCC controls still apply. If you want it to reach privacy-protected locations that macOS denies, grant the Node executable running the agent the corresponding macOS permission (for example Full Disk Access).
 
@@ -325,6 +367,8 @@ Gmail mode is narrower than the local agent: Gmail access is account-pinned thro
 
 Local-agent mode is deliberately broader. The gateway only receives individual tool results; audit logs record tool metadata and sanitized errors, not file contents, shell output, terminal scrollback, environment values, or the local-agent token. The agent also removes its bridge credentials from child-process environments by default.
 
+Screenshots are treated as sensitive task data. Capture is one-shot, temporary image files are deleted in `finally`, image bytes are returned only in the MCP image content block, and the base64 payload is not duplicated into `structuredContent`. Seeing a credential or personal information in a screenshot does not make it appropriate to echo it back.
+
 Because the shell and filesystem are intentionally unrestricted, **user-readable secrets on the Mac are not a sandbox boundary**: a command that explicitly reads a credential file can still return that file's contents. Do not treat the local agent as a secret-isolation mechanism.
 
 Rotate `LOCAL_AGENT_TOKEN` by changing it on both the gateway and Mac, then restart both sides.
@@ -338,7 +382,7 @@ npm run build
 npm run check
 ```
 
-Tests cover GitHub safety, OAuth, Gmail token/MIME/API behavior, Gmail MCP scope enforcement and audit privacy, MCP tool registration, local gateway request correlation, local filesystem/shell dispatch, and the Mac-agent request loop.
+Tests cover GitHub safety and CI reads, OAuth, Gmail token/MIME/API behavior, Gmail MCP scope enforcement and audit privacy, MCP tool registration and annotations, local gateway request correlation, project-context/code-search/Git-review behavior, bounded visual transport and permission handling, local filesystem/shell dispatch, and the Mac-agent request loop.
 
 ## 11. Hosting
 

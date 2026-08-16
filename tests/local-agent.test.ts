@@ -15,6 +15,8 @@ describe("Mac local agent", () => {
       maxTerminalBytes: 100_000,
       maxSessions: 4,
       maxCommandTimeoutMs: 5_000,
+      maxScreenshotBytes: 1_500_000,
+      maxScreenshotEdge: 1600,
     };
     const services: LocalExecutionServices = {
       terminal: new TerminalManager({ maxBufferBytes: 100_000, maxSessions: 4, shell: "/bin/sh" }),
