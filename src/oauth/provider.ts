@@ -11,7 +11,7 @@ import {
   InvalidTokenError,
 } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { OAuthClientInformationFull, OAuthTokenRevocationRequest, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
-import type { AppConfig } from "../config.js";
+import { gmailConfigured, type AppConfig } from "../config.js";
 import { htmlEscape, randomToken } from "../utils.js";
 import { JsonOAuthStore, type StoredAuthorizationParams } from "./store.js";
 
@@ -21,6 +21,8 @@ export const OAUTH_SCOPES = [
   "github:merge",
   "local:read",
   "local:write",
+  "gmail:read",
+  "gmail:write",
 ] as const;
 
 export class SingleUserOAuthProvider implements OAuthServerProvider {
@@ -46,15 +48,22 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
   }
 
   private validateScopes(scopes: string[] | undefined, includeConfiguredLocalScopes = false): string[] {
-    const defaults = this.config.localAgentToken
-      ? ["github:read", "github:write", "local:read", "local:write"]
-      : ["github:read", "github:write"];
+    const defaults = [
+      "github:read",
+      "github:write",
+      ...(this.config.localAgentToken ? ["local:read", "local:write"] : []),
+      ...(gmailConfigured(this.config) ? ["gmail:read", "gmail:write"] : []),
+    ];
     const requested = scopes?.length ? [...new Set(scopes)] : defaults;
     if (requested.some((scope) => !OAUTH_SCOPES.includes(scope as (typeof OAUTH_SCOPES)[number]))) {
       throw new InvalidScopeError("Unsupported OAuth scope requested");
     }
-    const granted = includeConfiguredLocalScopes && this.config.localAgentToken
-      ? [...new Set([...requested, "local:read", "local:write"])]
+    const configuredScopes = [
+      ...(this.config.localAgentToken ? ["local:read", "local:write"] : []),
+      ...(gmailConfigured(this.config) ? ["gmail:read", "gmail:write"] : []),
+    ];
+    const granted = includeConfiguredLocalScopes
+      ? [...new Set([...requested, ...configuredScopes])]
       : requested;
     return granted.filter((scope) => scope !== "github:merge" || this.config.allowMerge);
   }

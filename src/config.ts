@@ -32,6 +32,10 @@ const configSchema = z.object({
   accessTokenTtlSeconds: z.number().int().min(60).max(86400),
   refreshTokenTtlSeconds: z.number().int().min(300),
   auditLogPath: z.string().min(1),
+  gmailClientId: z.string(),
+  gmailClientSecret: z.string(),
+  gmailRefreshToken: z.string(),
+  gmailAccountEmail: z.string(),
   localAgentToken: z.string(),
   localAgentRpcTimeoutMs: z.number().int().min(1_000).max(600_000),
   localAgentPollWaitMs: z.number().int().min(1_000).max(30_000),
@@ -43,6 +47,10 @@ const configSchema = z.object({
 });
 
 export type AppConfig = z.infer<typeof configSchema>;
+
+export function gmailConfigured(config: Pick<AppConfig, "gmailClientId" | "gmailClientSecret" | "gmailRefreshToken" | "gmailAccountEmail">): boolean {
+  return Boolean(config.gmailClientId && config.gmailClientSecret && config.gmailRefreshToken && config.gmailAccountEmail);
+}
 
 function loadPrivateKey(env: NodeJS.ProcessEnv): string {
   if (env.GITHUB_PRIVATE_KEY_BASE64) {
@@ -58,6 +66,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const publicBaseUrl = new URL(env.PUBLIC_BASE_URL ?? "http://localhost:3000");
   if (nodeEnv === "production" && publicBaseUrl.protocol !== "https:") {
     throw new Error("PUBLIC_BASE_URL must use HTTPS in production");
+  }
+
+  const gmailValues = [
+    env.GMAIL_CLIENT_ID ?? "",
+    env.GMAIL_CLIENT_SECRET ?? "",
+    env.GMAIL_REFRESH_TOKEN ?? "",
+    env.GMAIL_ACCOUNT_EMAIL ?? "",
+  ];
+  const configuredGmailValues = gmailValues.filter((value) => value.length > 0).length;
+  if (configuredGmailValues !== 0 && configuredGmailValues !== gmailValues.length) {
+    throw new Error("Gmail configuration requires GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN, and GMAIL_ACCOUNT_EMAIL together");
   }
 
   const allowedRepositories = csv(env.GITHUB_ALLOWED_REPOSITORIES).map(normalizeRepo);
@@ -94,6 +113,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     accessTokenTtlSeconds: asInteger(env.ACCESS_TOKEN_TTL_SECONDS, 900),
     refreshTokenTtlSeconds: asInteger(env.REFRESH_TOKEN_TTL_SECONDS, 2_592_000),
     auditLogPath: env.AUDIT_LOG_PATH ?? "data/audit.jsonl",
+    gmailClientId: env.GMAIL_CLIENT_ID ?? "",
+    gmailClientSecret: env.GMAIL_CLIENT_SECRET ?? "",
+    gmailRefreshToken: env.GMAIL_REFRESH_TOKEN ?? "",
+    gmailAccountEmail: env.GMAIL_ACCOUNT_EMAIL ?? "",
     localAgentToken: env.LOCAL_AGENT_TOKEN ?? "",
     localAgentRpcTimeoutMs: asInteger(env.LOCAL_AGENT_RPC_TIMEOUT_MS, 300_000),
     localAgentPollWaitMs: asInteger(env.LOCAL_AGENT_POLL_WAIT_MS, 25_000),

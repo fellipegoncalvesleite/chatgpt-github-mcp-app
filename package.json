@@ -18,7 +18,8 @@
     "generate:secrets": "node scripts/generate-secrets.mjs",
     "local-agent": "npm run build && node --env-file=$HOME/.config/chatgpt-local-agent.env dist/local/agent.js",
     "local-agent:install": "npm run build && node scripts/install-local-agent.mjs",
-    "local-agent:uninstall": "node scripts/uninstall-local-agent.mjs"
+    "local-agent:uninstall": "node scripts/uninstall-local-agent.mjs",
+    "gmail:authorize": "node scripts/gmail-authorize.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

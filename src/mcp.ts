@@ -5,6 +5,7 @@ import type { AuditLogger } from "./audit.js";
 import type { AppConfig } from "./config.js";
 import { AppError, toErrorMessage } from "./errors.js";
 import type { GitHubService } from "./github/service.js";
+import { registerGmailTools, type GmailToolService } from "./gmail/mcp-tools.js";
 import type { LocalToolGateway } from "./local/gateway.js";
 import { registerLocalTools } from "./local/mcp-tools.js";
 
@@ -125,8 +126,9 @@ export function createGitHubMcpServer(dependencies: {
   github: GitHubToolService;
   audit: AuditLogger;
   localGateway?: LocalToolGateway;
+  gmail?: GmailToolService;
 }): McpServer {
-  const { config, github, audit, localGateway } = dependencies;
+  const { config, github, audit, localGateway, gmail } = dependencies;
   const server = new McpServer(
     {
       name: "chatgpt-development-bridge",
@@ -139,6 +141,8 @@ export function createGitHubMcpServer(dependencies: {
         "Prefer one github_create_change call containing all related file upserts/deletions so the result is one atomic commit.",
         "github_create_change creates a chatgpt/* branch and Pull Request by default; do not request direct writes to the default branch.",
         "When local tools are available, they operate on the connected Mac under the user's macOS account and may execute arbitrary shell commands.",
+        "When Gmail tools are available, use search/list tools before reading individual messages and never expose Google OAuth credentials or tokens.",
+        "Gmail v1 intentionally has no trash or permanent-delete tools.",
         "Never ask for or expose GitHub App private keys, OAuth secrets, LOCAL_AGENT_TOKEN, passwords, .env files, or other protected credentials.",
       ].join(" "),
     },
@@ -371,6 +375,10 @@ export function createGitHubMcpServer(dependencies: {
 
   if (localGateway) {
     registerLocalTools(server, { gateway: localGateway, audit });
+  }
+
+  if (gmail) {
+    registerGmailTools(server, { gmail, audit });
   }
 
   server.registerPrompt(
