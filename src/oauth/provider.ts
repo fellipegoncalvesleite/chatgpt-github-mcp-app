@@ -45,7 +45,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     return this.resource;
   }
 
-  private validateScopes(scopes: string[] | undefined): string[] {
+  private validateScopes(scopes: string[] | undefined, includeConfiguredLocalScopes = false): string[] {
     const defaults = this.config.localAgentToken
       ? ["github:read", "github:write", "local:read", "local:write"]
       : ["github:read", "github:write"];
@@ -53,13 +53,16 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     if (requested.some((scope) => !OAUTH_SCOPES.includes(scope as (typeof OAUTH_SCOPES)[number]))) {
       throw new InvalidScopeError("Unsupported OAuth scope requested");
     }
-    return requested.filter((scope) => scope !== "github:merge" || this.config.allowMerge);
+    const granted = includeConfiguredLocalScopes && this.config.localAgentToken
+      ? [...new Set([...requested, "local:read", "local:write"])]
+      : requested;
+    return granted.filter((scope) => scope !== "github:merge" || this.config.allowMerge);
   }
 
   private storedParams(params: AuthorizationParams): StoredAuthorizationParams {
     return {
       ...(params.state === undefined ? {} : { state: params.state }),
-      scopes: this.validateScopes(params.scopes),
+      scopes: this.validateScopes(params.scopes, true),
       codeChallenge: params.codeChallenge,
       redirectUri: params.redirectUri,
       resource: this.validateResource(params.resource).href,

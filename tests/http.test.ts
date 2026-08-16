@@ -125,7 +125,7 @@ describe("HTTP/OAuth surface", () => {
         redirect_uri: callback,
         code_challenge: challenge,
         code_challenge_method: "S256",
-        scope: "github:read github:write local:read local:write",
+        scope: "github:read github:write",
         resource: "http://localhost:3000/mcp",
         state: "state-1",
       })
@@ -140,6 +140,7 @@ describe("HTTP/OAuth surface", () => {
       .get(`/oauth/approve?request_id=${encodeURIComponent(requestId!)}`)
       .set("Host", "localhost")
       .expect(200);
+    expect(approvalPage.text).toContain("local:read");
     expect(approvalPage.text).toContain("local:write");
     expect(approvalPage.text).toContain("arbitrary filesystem mutation");
 
@@ -171,6 +172,7 @@ describe("HTTP/OAuth surface", () => {
       .expect(200);
     expect(tokens.body.access_token).toBeTruthy();
     expect(tokens.body.refresh_token).toBeTruthy();
+    expect(tokens.body.scope).toContain("local:read");
     expect(tokens.body.scope).toContain("local:write");
 
     const initialized = await request(app)
