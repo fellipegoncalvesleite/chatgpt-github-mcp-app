@@ -81,6 +81,75 @@ async function localTool(
   }
 }
 
+function screenCaptureResult(value: unknown): {
+  imageBase64: string;
+  mimeType: "image/png";
+  display: "main" | number;
+  width: number;
+  height: number;
+  byteLength: number;
+} {
+  if (typeof value !== "object" || value === null) {
+    throw new AppError("invalid_local_result", "Local screenshot response is not an object", 502);
+  }
+  const record = value as Record<string, unknown>;
+  const display = record.display;
+  if (
+    typeof record.imageBase64 !== "string"
+    || record.mimeType !== "image/png"
+    || (display !== "main" && typeof display !== "number")
+    || typeof record.width !== "number"
+    || typeof record.height !== "number"
+    || typeof record.byteLength !== "number"
+  ) {
+    throw new AppError("invalid_local_result", "Local screenshot response has an invalid shape", 502);
+  }
+  return {
+    imageBase64: record.imageBase64,
+    mimeType: "image/png",
+    display,
+    width: record.width,
+    height: record.height,
+    byteLength: record.byteLength,
+  };
+}
+
+async function localImageTool(
+  audit: AuditLogger,
+  tool: string,
+  extra: ToolExtra,
+  details: Record<string, unknown>,
+  action: () => Promise<unknown>,
+) {
+  try {
+    const result = screenCaptureResult(await action());
+    await audit.write({
+      ...actorFrom(extra),
+      tool,
+      outcome: "success",
+      details,
+    });
+    const { imageBase64, ...metadata } = result;
+    return {
+      content: [{ type: "image" as const, data: imageBase64, mimeType: result.mimeType }],
+      structuredContent: metadata,
+    };
+  } catch (error) {
+    const denied = error instanceof AppError && error.status >= 400 && error.status < 500;
+    await audit.write({
+      ...actorFrom(extra),
+      tool,
+      outcome: denied ? "denied" : "error",
+      details: {
+        ...details,
+        code: error instanceof AppError ? error.code : "internal_error",
+        message: toErrorMessage(error),
+      },
+    });
+    return errorResult(error);
+  }
+}
+
 const pathSchema = z.string().min(1).max(32_768);
 const envSchema = z.record(z.string(), z.string());
 
@@ -103,6 +172,38 @@ export function registerLocalTools(
       const status = gateway.status();
       if (!status.connected) return { gateway: status, machine: null };
       return { gateway: status, machine: await gateway.request("system.info", {}) };
+    }),
+  );
+
+  server.registerTool(
+    "local_get_ui_context",
+    {
+      title: "Get frontmost Mac UI context",
+      description: "Read the frontmost application, bundle identifier, and best-effort window title without activating, focusing, clicking, or typing in any application.",
+      inputSchema: z.object({}),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (_input, extra) => localTool(audit, "local_get_ui_context", extra, {}, async () => {
+      requireLocalScope(extra, "local:read");
+      return await gateway.request("visual.uiContext", {});
+    }),
+  );
+
+  server.registerTool(
+    "local_capture_screen",
+    {
+      title: "Capture one Mac screenshot",
+      description: "Capture one bounded screenshot for task-driven visual inspection. This is read-only and does not click, type, focus applications, or continuously monitor the screen.",
+      inputSchema: z.object({
+        display: z.union([z.literal("main"), z.number().int().min(1).max(32)]).default("main"),
+        includeCursor: z.boolean().default(false),
+        maxEdge: z.number().int().min(256).max(16_384).default(1600),
+      }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    async (input, extra) => localImageTool(audit, "local_capture_screen", extra, { display: input.display }, async () => {
+      requireLocalScope(extra, "local:read");
+      return await gateway.request("visual.captureScreen", input);
     }),
   );
 

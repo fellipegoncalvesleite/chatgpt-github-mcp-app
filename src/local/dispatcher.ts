@@ -15,12 +15,16 @@ import { getProjectContext } from "./project-context.js";
 import { LocalExecutionError } from "./protocol.js";
 import { runShell } from "./shell.js";
 import { TerminalManager } from "./terminal.js";
+import type { LocalVisualService } from "./visual.js";
 
 export type LocalExecutionServices = {
   terminal: TerminalManager;
   maxOutputBytes: number;
   maxFileBytes: number;
   maxCommandTimeoutMs: number;
+  visual?: LocalVisualService;
+  maxScreenshotBytes?: number;
+  maxScreenshotEdge?: number;
 };
 
 function objectParams(value: unknown): Record<string, unknown> {
@@ -153,6 +157,27 @@ export async function dispatchLocalRequest(
         stringParam(params, "query")!,
         { maxResults: numberParam(params, "maxResults", { fallback: 50, min: 1, max: 500 }) ?? 50 },
       );
+
+    case "visual.uiContext": {
+      if (!services.visual) throw new LocalExecutionError("visual_unavailable", "Visual inspection is not configured on this local agent");
+      return await services.visual.getUiContext();
+    }
+
+    case "visual.captureScreen": {
+      if (!services.visual) throw new LocalExecutionError("visual_unavailable", "Visual inspection is not configured on this local agent");
+      const rawDisplay = params.display;
+      const display = rawDisplay === undefined || rawDisplay === "main"
+        ? "main"
+        : numberParam(params, "display", { min: 1, max: 32 })!;
+      const serviceMaxEdge = services.maxScreenshotEdge ?? 1600;
+      const requestedMaxEdge = numberParam(params, "maxEdge", { fallback: serviceMaxEdge, min: 256, max: 16_384 }) ?? serviceMaxEdge;
+      return await services.visual.captureScreen({
+        display,
+        includeCursor: booleanParam(params, "includeCursor", false),
+        maxEdge: Math.min(requestedMaxEdge, serviceMaxEdge),
+        maxBytes: services.maxScreenshotBytes ?? 1_500_000,
+      });
+    }
 
     case "development.projectContext":
       return await getProjectContext(stringParam(params, "workingDirectory")!);

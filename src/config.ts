@@ -44,6 +44,8 @@ const configSchema = z.object({
   localAgentMaxTerminalBytes: z.number().int().min(1_024),
   localAgentMaxSessions: z.number().int().min(1).max(100),
   localAgentMaxCommandTimeoutMs: z.number().int().min(1_000).max(600_000),
+  localAgentMaxScreenshotBytes: z.number().int().min(1_024),
+  localAgentScreenshotMaxEdge: z.number().int().min(256).max(16_384),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;
@@ -125,5 +127,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     localAgentMaxTerminalBytes: asInteger(env.LOCAL_AGENT_MAX_TERMINAL_BYTES, 1_000_000),
     localAgentMaxSessions: asInteger(env.LOCAL_AGENT_MAX_SESSIONS, 16),
     localAgentMaxCommandTimeoutMs: asInteger(env.LOCAL_AGENT_MAX_COMMAND_TIMEOUT_MS, 120_000),
+    localAgentMaxScreenshotBytes: asInteger(env.LOCAL_AGENT_MAX_SCREENSHOT_BYTES, 1_500_000),
+    localAgentScreenshotMaxEdge: asInteger(env.LOCAL_AGENT_SCREENSHOT_MAX_EDGE, 1600),
   });
 }

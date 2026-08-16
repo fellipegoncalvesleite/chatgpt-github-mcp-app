@@ -189,3 +189,61 @@ describe("local development intelligence", () => {
     runtime.terminal.closeAll();
   });
 });
+
+
+describe("local visual dispatch", () => {
+  it("dispatches read-only UI context through an injected visual service", async () => {
+    const runtime = {
+      ...services(),
+      visual: {
+        async getUiContext() {
+          return { frontmostApplication: "Visual Studio Code", bundleId: "com.microsoft.VSCode", windowTitle: "mcp.ts" };
+        },
+        async captureScreen() {
+          throw new Error("not used");
+        },
+      },
+      maxScreenshotBytes: 1_500_000,
+      maxScreenshotEdge: 1600,
+    } as LocalExecutionServices;
+
+    await expect(dispatchLocalRequest("visual.uiContext", {}, runtime)).resolves.toEqual({
+      frontmostApplication: "Visual Studio Code",
+      bundleId: "com.microsoft.VSCode",
+      windowTitle: "mcp.ts",
+    });
+    runtime.terminal.closeAll();
+  });
+
+  it("dispatches bounded screen capture options through the visual service", async () => {
+    const calls: unknown[] = [];
+    const runtime = {
+      ...services(),
+      visual: {
+        async getUiContext() { return { frontmostApplication: null, bundleId: null, windowTitle: null }; },
+        async captureScreen(options: unknown) {
+          calls.push(options);
+          return {
+            imageBase64: Buffer.from("png").toString("base64"),
+            mimeType: "image/png",
+            display: "main",
+            width: 1200,
+            height: 800,
+            byteLength: 3,
+          };
+        },
+      },
+      maxScreenshotBytes: 1_500_000,
+      maxScreenshotEdge: 1600,
+    } as LocalExecutionServices;
+
+    const result = await dispatchLocalRequest("visual.captureScreen", {
+      display: "main",
+      includeCursor: false,
+      maxEdge: 2400,
+    }, runtime) as { width: number };
+    expect(result.width).toBe(1200);
+    expect(calls).toEqual([{ display: "main", includeCursor: false, maxEdge: 1600, maxBytes: 1_500_000 }]);
+    runtime.terminal.closeAll();
+  });
+});

@@ -10,6 +10,7 @@ import {
   type LocalRpcResponse,
 } from "./protocol.js";
 import { TerminalManager } from "./terminal.js";
+import { MacVisualService } from "./visual.js";
 
 export type LocalAgentRuntimeConfig = {
   gatewayUrl: URL;
@@ -21,6 +22,8 @@ export type LocalAgentRuntimeConfig = {
   maxTerminalBytes: number;
   maxSessions: number;
   maxCommandTimeoutMs: number;
+  maxScreenshotBytes: number;
+  maxScreenshotEdge: number;
 };
 
 function integerEnv(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
@@ -44,6 +47,8 @@ export function loadLocalAgentConfig(env: NodeJS.ProcessEnv = process.env): Loca
     maxTerminalBytes: integerEnv(env, "LOCAL_AGENT_MAX_TERMINAL_BYTES", 1_000_000),
     maxSessions: integerEnv(env, "LOCAL_AGENT_MAX_SESSIONS", 16),
     maxCommandTimeoutMs: integerEnv(env, "LOCAL_AGENT_MAX_COMMAND_TIMEOUT_MS", 120_000),
+    maxScreenshotBytes: integerEnv(env, "LOCAL_AGENT_MAX_SCREENSHOT_BYTES", 1_500_000),
+    maxScreenshotEdge: integerEnv(env, "LOCAL_AGENT_SCREENSHOT_MAX_EDGE", 1600),
   };
 }
 
@@ -122,6 +127,9 @@ export async function runLocalAgent(
     maxOutputBytes: config.maxOutputBytes,
     maxFileBytes: config.maxFileBytes,
     maxCommandTimeoutMs: config.maxCommandTimeoutMs,
+    visual: new MacVisualService(),
+    maxScreenshotBytes: config.maxScreenshotBytes,
+    maxScreenshotEdge: config.maxScreenshotEdge,
   };
 
   let backoffMs = 500;

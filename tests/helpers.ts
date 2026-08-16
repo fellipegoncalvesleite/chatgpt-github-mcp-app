@@ -48,6 +48,8 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     localAgentMaxTerminalBytes: 100_000,
     localAgentMaxSessions: 4,
     localAgentMaxCommandTimeoutMs: 5_000,
+    localAgentMaxScreenshotBytes: 1_500_000,
+    localAgentScreenshotMaxEdge: 1600,
     ...overrides,
   };
 }

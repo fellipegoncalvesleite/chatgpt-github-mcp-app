@@ -130,6 +130,8 @@ describe("GitHub MCP tools", () => {
     expect(names).toContain("local_get_project_context");
     expect(names).toContain("local_code_search");
     expect(names).toContain("local_git_review");
+    expect(names).toContain("local_get_ui_context");
+    expect(names).toContain("local_capture_screen");
 
     const denied = await withoutLocalScope.client.callTool({ name: "local_get_info", arguments: {} });
     expect(denied.isError).toBe(true);
@@ -192,6 +194,53 @@ describe("development workflow", () => {
     expect(text).toMatch(/AGENTS/);
     expect(text).toMatch(/targeted tests/i);
     expect(text).toMatch(/Git state|git review/i);
+
+    await client.close();
+    await server.close();
+  });
+});
+
+
+describe("visual MCP transport", () => {
+  it("returns screenshot bytes as an MCP image block without duplicating base64 in structured content", async () => {
+    const imageBase64 = Buffer.from("fake-png-bytes").toString("base64");
+    const gateway: LocalToolGateway = {
+      status() {
+        return { configured: true, connected: true, agentId: "mac-test", lastSeenAt: new Date().toISOString(), queuedRequests: 0, pendingRequests: 0 };
+      },
+      async request(method) {
+        if (method === "visual.captureScreen") {
+          return {
+            imageBase64,
+            mimeType: "image/png",
+            display: "main",
+            width: 1200,
+            height: 800,
+            byteLength: 14,
+          };
+        }
+        return {};
+      },
+    };
+    const { client, server } = await connectedClient(["local:read"], {}, gateway);
+
+    const result = await client.callTool({
+      name: "local_capture_screen",
+      arguments: { display: "main", includeCursor: false, maxEdge: 1600 },
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.content).toEqual([
+      { type: "image", data: imageBase64, mimeType: "image/png" },
+    ]);
+    expect(JSON.stringify(result.structuredContent)).not.toContain(imageBase64);
+    expect(result.structuredContent).toMatchObject({
+      display: "main",
+      width: 1200,
+      height: 800,
+      byteLength: 14,
+      mimeType: "image/png",
+    });
 
     await client.close();
     await server.close();
