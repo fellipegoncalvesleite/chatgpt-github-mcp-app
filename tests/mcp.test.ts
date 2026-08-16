@@ -73,8 +73,24 @@ describe("GitHub MCP tools", () => {
     const names = (await client.listTools()).tools.map((tool) => tool.name);
     expect(names).toContain("github_read_file");
     expect(names).toContain("github_create_change");
+    expect(names).toContain("github_get_check_status");
+    expect(names).toContain("github_list_workflow_runs");
+    expect(names).toContain("github_get_workflow_run");
     expect(names).not.toContain("github_merge_pull_request");
     expect(names).not.toContain("github_delete_branch");
+    await client.close();
+    await server.close();
+  });
+
+
+  it("requires github:read for CI status tools", async () => {
+    const { client, server } = await connectedClient([]);
+    const result = await client.callTool({
+      name: "github_get_check_status",
+      arguments: { repository: "acme/demo", ref: "main" },
+    });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.structuredContent)).toContain("insufficient_scope");
     await client.close();
     await server.close();
   });

@@ -18,6 +18,9 @@ export type GitHubToolService = Pick<
   | "readFile"
   | "listPullRequests"
   | "getPullRequest"
+  | "getCheckStatus"
+  | "listWorkflowRuns"
+  | "getWorkflowRun"
   | "createChange"
   | "commentPullRequest"
   | "mergePullRequest"
@@ -252,6 +255,68 @@ export function createGitHubMcpServer(dependencies: {
     async ({ repository, pullNumber }, extra) => auditedTool(audit, "github_get_pull_request", extra, { repository }, async () => {
       requireScope(extra, "github:read");
       return await github.getPullRequest(repository, pullNumber);
+    }),
+  );
+
+  server.registerTool(
+    "github_get_check_status",
+    {
+      title: "Get GitHub check status",
+      description: "Read Check Runs and combined commit status for a branch, tag, or commit ref. This does not trigger, rerun, cancel, or modify CI.",
+      inputSchema: z.object({
+        repository: repositorySchema,
+        ref: z.string().min(1).max(200),
+      }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ repository, ref }, extra) => auditedTool(audit, "github_get_check_status", extra, { repository }, async () => {
+      requireScope(extra, "github:read");
+      return await github.getCheckStatus(repository, ref);
+    }),
+  );
+
+  server.registerTool(
+    "github_list_workflow_runs",
+    {
+      title: "List GitHub Actions workflow runs",
+      description: "List recent GitHub Actions runs for an allowed repository, optionally filtered by branch, event, or status. Read-only.",
+      inputSchema: z.object({
+        repository: repositorySchema,
+        branch: z.string().min(1).max(255).optional(),
+        event: z.string().min(1).max(100).optional(),
+        status: z.enum([
+          "completed", "action_required", "cancelled", "failure", "neutral", "skipped", "stale",
+          "success", "timed_out", "in_progress", "queued", "requested", "waiting", "pending",
+        ]).optional(),
+        limit: z.number().int().min(1).max(100).default(20),
+      }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ repository, branch, event, status, limit }, extra) => auditedTool(audit, "github_list_workflow_runs", extra, { repository }, async () => {
+      requireScope(extra, "github:read");
+      return await github.listWorkflowRuns(repository, {
+        ...(branch === undefined ? {} : { branch }),
+        ...(event === undefined ? {} : { event }),
+        ...(status === undefined ? {} : { status }),
+        limit,
+      });
+    }),
+  );
+
+  server.registerTool(
+    "github_get_workflow_run",
+    {
+      title: "Get GitHub Actions workflow run",
+      description: "Read one GitHub Actions workflow run and its conclusion. This tool does not mutate the run.",
+      inputSchema: z.object({
+        repository: repositorySchema,
+        runId: z.number().int().positive(),
+      }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ repository, runId }, extra) => auditedTool(audit, "github_get_workflow_run", extra, { repository }, async () => {
+      requireScope(extra, "github:read");
+      return await github.getWorkflowRun(repository, runId);
     }),
   );
 

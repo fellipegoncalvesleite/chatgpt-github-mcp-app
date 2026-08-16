@@ -277,6 +277,136 @@ export class GitHubService {
     };
   }
 
+  async getCheckStatus(repository: string, ref: string): Promise<{
+    repository: string;
+    ref: string;
+    state: "none" | "pending" | "passing" | "failing";
+    checkRuns: Array<{
+      id: number;
+      name: string;
+      status: string;
+      conclusion: string | null;
+      detailsUrl: string | null;
+      startedAt: string | null;
+      completedAt: string | null;
+    }>;
+    commitStatus: { state: string; totalCount: number };
+  }> {
+    const { owner, repo } = splitRepo(repository);
+    const client = await this.repositoryClient(repository);
+    const [checks, combined] = await Promise.all([
+      client.checks.listForRef({ owner, repo, ref, per_page: 100 }),
+      client.repos.getCombinedStatusForRef({ owner, repo, ref }),
+    ]);
+    const checkRuns = checks.data.check_runs.map((run) => ({
+      id: run.id,
+      name: run.name,
+      status: run.status,
+      conclusion: run.conclusion,
+      detailsUrl: run.details_url,
+      startedAt: run.started_at,
+      completedAt: run.completed_at,
+    }));
+    const failureConclusions = new Set(["failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"]);
+    const hasFailure = checkRuns.some((run) => run.conclusion !== null && failureConclusions.has(run.conclusion))
+      || combined.data.state === "failure"
+      || combined.data.state === "error";
+    const hasPending = checkRuns.some((run) => run.status !== "completed") || combined.data.state === "pending";
+    const hasAny = checkRuns.length > 0 || combined.data.total_count > 0;
+    const state = !hasAny ? "none" : hasFailure ? "failing" : hasPending ? "pending" : "passing";
+    return {
+      repository: normalizeRepo(repository),
+      ref,
+      state,
+      checkRuns,
+      commitStatus: { state: combined.data.state, totalCount: combined.data.total_count },
+    };
+  }
+
+  async listWorkflowRuns(
+    repository: string,
+    options: { branch?: string; status?: string; event?: string; limit?: number } = {},
+  ): Promise<{ totalCount: number; runs: Array<{
+    id: number;
+    name: string | null;
+    runNumber: number;
+    attempt: number | null;
+    event: string;
+    status: string | null;
+    conclusion: string | null;
+    headBranch: string | null;
+    headSha: string;
+    url: string;
+    createdAt: string;
+    updatedAt: string;
+    workflowId: number;
+  }> }> {
+    const { owner, repo } = splitRepo(repository);
+    const client = await this.repositoryClient(repository);
+    const response = await client.actions.listWorkflowRunsForRepo({
+      owner,
+      repo,
+      per_page: Math.min(Math.max(options.limit ?? 20, 1), 100),
+      ...(options.branch === undefined ? {} : { branch: options.branch }),
+      ...(options.event === undefined ? {} : { event: options.event }),
+      ...(options.status === undefined ? {} : { status: options.status as never }),
+    });
+    return {
+      totalCount: response.data.total_count,
+      runs: response.data.workflow_runs.map((run) => ({
+        id: run.id,
+        name: run.name ?? null,
+        runNumber: run.run_number,
+        attempt: run.run_attempt ?? null,
+        event: run.event,
+        status: run.status,
+        conclusion: run.conclusion,
+        headBranch: run.head_branch,
+        headSha: run.head_sha,
+        url: run.html_url,
+        createdAt: run.created_at,
+        updatedAt: run.updated_at,
+        workflowId: run.workflow_id,
+      })),
+    };
+  }
+
+  async getWorkflowRun(repository: string, runId: number): Promise<{
+    id: number;
+    name: string | null;
+    runNumber: number;
+    attempt: number | null;
+    event: string;
+    status: string | null;
+    conclusion: string | null;
+    headBranch: string | null;
+    headSha: string;
+    url: string;
+    createdAt: string;
+    updatedAt: string;
+    workflowId: number;
+  }> {
+    const { owner, repo } = splitRepo(repository);
+    const client = await this.repositoryClient(repository);
+    const response = await client.actions.getWorkflowRun({ owner, repo, run_id: runId });
+    const run = response.data;
+    return {
+      id: run.id,
+      name: run.name ?? null,
+      runNumber: run.run_number,
+      attempt: run.run_attempt ?? null,
+      event: run.event,
+      status: run.status,
+      conclusion: run.conclusion,
+      headBranch: run.head_branch,
+      headSha: run.head_sha,
+      url: run.html_url,
+      createdAt: run.created_at,
+      updatedAt: run.updated_at,
+      workflowId: run.workflow_id,
+    };
+  }
+
   async createChange(input: CreateChangeInput): Promise<CreateChangeResult> {
     const repository = normalizeRepo(input.repository);
     const validatedChanges = this.policy.validateChanges(input.changes);
