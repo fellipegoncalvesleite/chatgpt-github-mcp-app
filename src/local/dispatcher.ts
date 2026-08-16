@@ -8,6 +8,7 @@ import {
   searchLocalFiles,
   writeLocalTextFile,
 } from "./filesystem.js";
+import { getLocalCapabilities } from "./capabilities.js";
 import { searchCode } from "./code-search.js";
 import { reviewGit } from "./git-review.js";
 import { killLocalProcess, listLocalProcesses } from "./processes.js";
@@ -106,6 +107,9 @@ export async function dispatchLocalRequest(
   const params = objectParams(rawParams);
 
   switch (method) {
+    case "system.capabilities":
+      return getLocalCapabilities();
+
     case "system.info":
       return {
         hostname: hostname(),

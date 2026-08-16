@@ -367,7 +367,14 @@ export function createGitHubMcpServer(dependencies: {
   }
 
   if (localGateway) {
-    registerLocalTools(server, { gateway: localGateway, audit });
+    registerLocalTools(server, {
+      gateway: localGateway,
+      audit,
+      bridgeCapabilities: {
+        githubMergeEnabled: config.allowMerge,
+        gmailConfigured: gmail !== undefined,
+      },
+    });
   }
 
   if (gmail) {

@@ -155,9 +155,47 @@ const envSchema = z.record(z.string(), z.string());
 
 export function registerLocalTools(
   server: McpServer,
-  dependencies: { gateway: LocalToolGateway; audit: AuditLogger },
+  dependencies: {
+    gateway: LocalToolGateway;
+    audit: AuditLogger;
+    bridgeCapabilities?: { githubMergeEnabled: boolean; gmailConfigured: boolean };
+  },
 ): void {
   const { gateway, audit } = dependencies;
+
+  server.registerTool(
+    "local_get_capabilities",
+    {
+      title: "Get bridge capabilities",
+      description: "Report the caller's effective GitHub, local Mac, visual, and Gmail capabilities before proposing manual workarounds. Screen Recording permission remains unknown until a task-driven capture is attempted.",
+      inputSchema: z.object({}),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (_input, extra) => localTool(audit, "local_get_capabilities", extra, {}, async () => {
+      requireLocalScope(extra, "local:read");
+      const raw = await gateway.request("system.capabilities", {});
+      if (typeof raw !== "object" || raw === null) {
+        throw new AppError("invalid_local_result", "Local capability response is not an object", 502);
+      }
+      const local = raw as { local?: unknown; vision?: unknown; platform?: unknown };
+      const scopes = extra.authInfo?.scopes ?? [];
+      const bridge = dependencies.bridgeCapabilities ?? { githubMergeEnabled: false, gmailConfigured: false };
+      return {
+        GitHub: {
+          read: scopes.includes("github:read"),
+          write: scopes.includes("github:write"),
+          merge: bridge.githubMergeEnabled && scopes.includes("github:merge"),
+        },
+        Local: local.local ?? {},
+        Vision: local.vision ?? {},
+        Gmail: {
+          read: bridge.gmailConfigured && scopes.includes("gmail:read"),
+          send: bridge.gmailConfigured && scopes.includes("gmail:write"),
+        },
+        platform: local.platform ?? null,
+      };
+    }),
+  );
 
   server.registerTool(
     "local_get_info",

@@ -191,6 +191,31 @@ describe("local development intelligence", () => {
 });
 
 
+
+  it("reports local and visual capabilities conservatively", async () => {
+    const runtime = services();
+    const result = await dispatchLocalRequest("system.capabilities", {}, runtime) as {
+      platform: string;
+      local: Record<string, boolean>;
+      vision: { uiContext: boolean; screenshots: boolean; screenRecordingPermission: string };
+    };
+
+    expect(result.local).toMatchObject({
+      filesystemRead: true,
+      filesystemWrite: true,
+      shell: true,
+      terminal: true,
+      processes: true,
+      projectContext: true,
+      codeSearch: true,
+      gitReview: true,
+    });
+    expect(result.vision.screenRecordingPermission).toBe("unknown");
+    expect(result.vision.uiContext).toBe(result.platform === "darwin");
+    expect(result.vision.screenshots).toBe(result.platform === "darwin");
+    runtime.terminal.closeAll();
+  });
+
 describe("local visual dispatch", () => {
   it("dispatches read-only UI context through an injected visual service", async () => {
     const runtime = {

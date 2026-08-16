@@ -24,6 +24,13 @@ function fakeLocalGateway(): LocalToolGateway {
       };
     },
     async request(method, params) {
+      if (method === "system.capabilities") {
+        return {
+          platform: "darwin",
+          local: { filesystemRead: true, filesystemWrite: true, shell: true, terminal: true, processes: true, projectContext: true, codeSearch: true, gitReview: true },
+          vision: { uiContext: true, screenshots: true, screenRecordingPermission: "unknown" },
+        };
+      }
       return { method, params, hostname: "test-mac" };
     },
   };
@@ -132,6 +139,7 @@ describe("GitHub MCP tools", () => {
     expect(names).toContain("local_git_review");
     expect(names).toContain("local_get_ui_context");
     expect(names).toContain("local_capture_screen");
+    expect(names).toContain("local_get_capabilities");
 
     const denied = await withoutLocalScope.client.callTool({ name: "local_get_info", arguments: {} });
     expect(denied.isError).toBe(true);
@@ -143,6 +151,15 @@ describe("GitHub MCP tools", () => {
     const info = await withLocalScope.client.callTool({ name: "local_get_info", arguments: {} });
     expect(info.isError).not.toBe(true);
     expect(JSON.stringify(info.structuredContent)).toContain("test-mac");
+
+    const capabilities = await withLocalScope.client.callTool({ name: "local_get_capabilities", arguments: {} });
+    expect(capabilities.isError).not.toBe(true);
+    expect(capabilities.structuredContent).toMatchObject({
+      GitHub: { read: false, write: false, merge: false },
+      Local: { filesystemRead: true, filesystemWrite: true, shell: true, terminal: true, processes: true },
+      Vision: { uiContext: true, screenshots: true, screenRecordingPermission: "unknown" },
+      Gmail: { read: false, send: false },
+    });
 
     const run = await withLocalScope.client.callTool({
       name: "local_run",
