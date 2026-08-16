@@ -1,35 +1,14 @@
 import { describe, expect, it } from "vitest";
-import type { AppConfig } from "../src/config.js";
 import { SecurityPolicy } from "../src/security/policy.js";
+import { testConfig } from "./helpers.js";
 
-const config: AppConfig = {
-  nodeEnv: "test",
-  port: 3000,
-  publicBaseUrl: new URL("http://localhost:3000"),
-  githubAppId: "1",
-  githubPrivateKey: "-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----",
-  allowedRepositories: ["acme/demo"],
-  allowAllInstalledRepos: false,
-  branchPrefix: "chatgpt/",
-  allowDefaultBranchWrite: false,
-  allowMerge: false,
-  allowDeleteBranch: false,
-  allowWorkflowEdits: false,
+const config = testConfig({
   protectedPathPatterns: ["**/.env", "**/*.pem"],
   maxFilesPerChange: 3,
   maxFileBytes: 100,
   maxReadFileBytes: 1000,
   maxTotalChangeBytes: 200,
-  maxTreeEntries: 5000,
-  maxHttpBodyBytes: 3_000_000,
-  oauthSigningSecret: "x".repeat(40),
-  oauthAdminPasswordHash: "scrypt:a:b",
-  oauthStorePath: "data/test.json",
-  oauthAllowedRedirectHosts: ["chatgpt.com", "localhost"],
-  accessTokenTtlSeconds: 900,
-  refreshTokenTtlSeconds: 3600,
-  auditLogPath: "data/audit-test.jsonl",
-};
+});
 
 describe("SecurityPolicy", () => {
   const policy = new SecurityPolicy(config);

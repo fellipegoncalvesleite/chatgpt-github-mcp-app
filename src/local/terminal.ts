@@ -1,5 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { localChildEnvironment } from "./environment.js";
 import { LocalExecutionError } from "./protocol.js";
 import { terminateChildTree } from "./shell.js";
@@ -86,7 +89,7 @@ export class TerminalManager {
       pid: child.pid ?? null,
       command: command ?? shell,
       cwd: input.cwd ?? process.cwd(),
-      pty: process.platform === "darwin" ? "script" : "pipe",
+      pty: process.platform === "darwin" ? "python-pty" : "pipe",
     };
   }
 
@@ -123,7 +126,7 @@ export class TerminalManager {
       try {
         process.kill(session.child.pid, "SIGWINCH");
       } catch {
-        // Resize notification is best-effort with the native script wrapper.
+        // Resize notification is best-effort for the bridge process.
       }
     }
     return {
@@ -131,7 +134,7 @@ export class TerminalManager {
       cols,
       rows,
       resized: false,
-      note: "The dependency-free v1 terminal uses macOS script(1); input/output is PTY-backed on macOS, but window-size ioctl is not exposed.",
+      note: "The dependency-free macOS PTY bridge sets the initial terminal size; dynamic resize is not exposed in v1.",
     };
   }
 
@@ -168,14 +171,29 @@ export class TerminalManager {
 
   private spawnSpec(shell: string, command: string | undefined): { executable: string; args: string[] } {
     if (process.platform === "darwin") {
-      const args = ["-q", "/dev/null", shell];
-      if (command) args.push("-lc", command);
-      else args.push("-il");
-      return { executable: "/usr/bin/script", args };
+      const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+      const bridgePath = resolve(moduleDirectory, "../../scripts/pty-bridge.py");
+      if (!existsSync(bridgePath)) {
+        throw new LocalExecutionError("pty_bridge_missing", `macOS PTY bridge does not exist: ${bridgePath}`);
+      }
+      const python = this.pythonExecutable();
+      return {
+        executable: python,
+        args: [bridgePath, shell, ...(command ? ["-lc", command] : ["-il"])],
+      };
     }
     return {
       executable: shell,
       args: command ? ["-lc", command] : ["-il"],
     };
+  }
+
+  private pythonExecutable(): string {
+    const configured = process.env.LOCAL_AGENT_PYTHON?.trim();
+    if (configured) return configured;
+    for (const candidate of ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"]) {
+      if (existsSync(candidate)) return candidate;
+    }
+    return "python3";
   }
 }
