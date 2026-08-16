@@ -188,6 +188,89 @@ describe("local development intelligence", () => {
     });
     runtime.terminal.closeAll();
   });
+
+  it("detects a Python project without inventing a package manager or commands", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "local-python-project-"));
+    created.push(directory);
+    await writeFile(join(directory, "pyproject.toml"), "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+    execFileSync("git", ["init", "-b", "main"], { cwd: directory });
+    execFileSync("git", ["config", "user.email", "tests@example.com"], { cwd: directory });
+    execFileSync("git", ["config", "user.name", "Tests"], { cwd: directory });
+    execFileSync("git", ["add", "."], { cwd: directory });
+    execFileSync("git", ["commit", "-m", "initial"], { cwd: directory });
+    const canonical = await realpath(directory);
+    const runtime = services();
+
+    await expect(dispatchLocalRequest("development.projectContext", {
+      workingDirectory: canonical,
+    }, runtime)).resolves.toMatchObject({
+      repositoryRoot: canonical,
+      currentBranch: "main",
+      dirty: false,
+      detectedLanguages: expect.arrayContaining(["Python"]),
+      packageManager: null,
+      packageFiles: ["pyproject.toml"],
+      testCommands: [],
+      buildCommands: [],
+      lintCommands: [],
+    });
+    runtime.terminal.closeAll();
+  });
+
+  it("code search respects .gitignore, Unicode, binary exclusion, and result limits", async () => {
+    const directory = await createGitFixture();
+    await writeFile(join(directory, ".gitignore"), "node_modules/\nignored.txt\n");
+    await writeFile(join(directory, "ignored.txt"), "needle should never appear\n");
+    await writeFile(join(directory, "src", "unicode.ts"), "export const café = 'needle αβγ';\n");
+    await writeFile(join(directory, "src", "second.ts"), "export const second = 'needle';\n");
+    await writeFile(join(directory, "src", "binary.bin"), Buffer.concat([Buffer.from("needle"), Buffer.from([0]), Buffer.from("binary")]));
+    const runtime = services();
+
+    const result = await dispatchLocalRequest("development.codeSearch", {
+      root: directory,
+      query: "needle",
+      maxResults: 1,
+      contextLines: 0,
+    }, runtime) as { matches: Array<{ path: string; text: string }>; truncated: boolean };
+
+    expect(result.matches).toHaveLength(1);
+    expect(result.truncated).toBe(true);
+    expect(result.matches[0]?.path).not.toContain("ignored.txt");
+    expect(result.matches[0]?.path).not.toContain("binary.bin");
+
+    const unicode = await dispatchLocalRequest("development.codeSearch", {
+      root: directory,
+      query: "αβγ",
+      maxResults: 10,
+      contextLines: 0,
+    }, runtime) as { matches: Array<{ path: string; text: string }> };
+    expect(unicode.matches).toEqual([
+      expect.objectContaining({ path: join(directory, "src", "unicode.ts"), text: expect.stringContaining("αβγ") }),
+    ]);
+    runtime.terminal.closeAll();
+  });
+
+  it("reports a clean Git repository and truncates oversized patches", async () => {
+    const directory = await createGitFixture();
+    const runtime = services();
+    const clean = await dispatchLocalRequest("development.gitReview", {
+      workingDirectory: directory,
+      includePatch: true,
+      maxPatchBytes: 1_000,
+    }, runtime) as { stagedFiles: string[]; unstagedFiles: string[]; untrackedFiles: string[]; conflicts: string[]; patch: string; patchTruncated: boolean };
+    expect(clean).toMatchObject({ stagedFiles: [], unstagedFiles: [], untrackedFiles: [], conflicts: [], patch: "", patchTruncated: false });
+
+    await writeFile(join(directory, "src", "index.ts"), `export const text = ${JSON.stringify("x".repeat(20_000))};\n`);
+    const changed = await dispatchLocalRequest("development.gitReview", {
+      workingDirectory: directory,
+      includePatch: true,
+      maxPatchBytes: 1_000,
+    }, runtime) as { diffStat: string; patch: string; patchTruncated: boolean };
+    expect(changed.diffStat).toContain("src/index.ts");
+    expect(changed.patchTruncated).toBe(true);
+    expect(Buffer.byteLength(changed.patch, "utf8")).toBeLessThanOrEqual(1_000);
+    runtime.terminal.closeAll();
+  });
 });
 
 

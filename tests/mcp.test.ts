@@ -235,6 +235,19 @@ describe("development workflow", () => {
 
 
 describe("visual MCP transport", () => {
+  it("requires local:read for screenshot capture", async () => {
+    const gateway = fakeLocalGateway();
+    const { client, server } = await connectedClient([], {}, gateway);
+    const result = await client.callTool({
+      name: "local_capture_screen",
+      arguments: { display: "main", includeCursor: false, maxEdge: 1600 },
+    });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.structuredContent)).toContain("insufficient_scope");
+    await client.close();
+    await server.close();
+  });
+
   it("returns screenshot bytes as an MCP image block without duplicating base64 in structured content", async () => {
     const imageBase64 = Buffer.from("fake-png-bytes").toString("base64");
     const gateway: LocalToolGateway = {
@@ -274,6 +287,36 @@ describe("visual MCP transport", () => {
       byteLength: 14,
       mimeType: "image/png",
     });
+
+    await client.close();
+    await server.close();
+  });
+});
+
+describe("tool safety annotations", () => {
+  it("keeps observation tools read-only and high-impact tools destructive", async () => {
+    const gateway = fakeLocalGateway();
+    const { client, server } = await connectedClient(
+      ["github:read", "github:write", "github:merge", "local:read", "local:write"],
+      { allowMerge: true },
+      gateway,
+    );
+    const tools = (await client.listTools()).tools;
+    const annotations = (name: string) => tools.find((tool) => tool.name === name)?.annotations;
+
+    expect(annotations("local_capture_screen")).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    expect(annotations("local_get_ui_context")).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    expect(annotations("local_get_project_context")).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    expect(annotations("local_code_search")).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    expect(annotations("local_git_review")).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    expect(annotations("github_get_check_status")).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    expect(annotations("github_list_workflow_runs")).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    expect(annotations("github_get_workflow_run")).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+
+    expect(annotations("local_delete")).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    expect(annotations("local_process_kill")).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    expect(annotations("github_create_change")).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    expect(annotations("github_merge_pull_request")).toMatchObject({ readOnlyHint: false, destructiveHint: true });
 
     await client.close();
     await server.close();

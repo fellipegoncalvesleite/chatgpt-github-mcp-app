@@ -72,6 +72,27 @@ describe("GitHubService CI awareness", () => {
     expect(mocks.client.checks.listForRef).toHaveBeenCalledWith(expect.objectContaining({ owner: "acme", repo: "demo", ref: "abc123" }));
   });
 
+  it("treats successful Check Runs as passing when there are no legacy commit statuses", async () => {
+    const config = testConfig({ githubInstallationId: 123 });
+    const service = new GitHubService(config, new SecurityPolicy(config));
+    mocks.client.checks.listForRef.mockResolvedValue({
+      data: {
+        total_count: 1,
+        check_runs: [
+          { id: 1, name: "CI", status: "completed", conclusion: "success", details_url: null, started_at: null, completed_at: "2026-08-16T20:01:00Z" },
+        ],
+      },
+    });
+    mocks.client.repos.getCombinedStatusForRef.mockResolvedValue({
+      data: { state: "pending", total_count: 0, statuses: [] },
+    });
+
+    await expect(service.getCheckStatus("acme/demo", "abc123")).resolves.toMatchObject({
+      state: "passing",
+      commitStatus: { state: "pending", totalCount: 0 },
+    });
+  });
+
   it("lists and reads GitHub Actions workflow runs", async () => {
     const config = testConfig({ githubInstallationId: 123 });
     const service = new GitHubService(config, new SecurityPolicy(config));

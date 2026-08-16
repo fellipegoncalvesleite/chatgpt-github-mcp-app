@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -58,15 +58,57 @@ function parseStatus(status: string): {
   };
 }
 
-function truncateUtf8(value: string, maxBytes: number): { value: string; truncated: boolean } {
-  const buffer = Buffer.from(value, "utf8");
-  if (buffer.byteLength <= maxBytes) return { value, truncated: false };
-  let end = Math.max(0, maxBytes);
-  while (end > 0 && (buffer[end]! & 0b1100_0000) === 0b1000_0000) end -= 1;
-  return {
-    value: buffer.subarray(0, end).toString("utf8"),
-    truncated: true,
-  };
+function utf8Prefix(buffer: Buffer, maxBytes: number): string {
+  let end = Math.min(buffer.length, maxBytes);
+  if (end === buffer.length || end === 0) return buffer.subarray(0, end).toString("utf8");
+
+  let start = end - 1;
+  while (start > 0 && (buffer[start]! & 0b1100_0000) === 0b1000_0000) start -= 1;
+  const first = buffer[start]!;
+  const expectedLength = first <= 0x7f ? 1 : first <= 0xdf ? 2 : first <= 0xef ? 3 : 4;
+  if (end - start < expectedLength) end = start;
+  return buffer.subarray(0, end).toString("utf8");
+}
+
+async function boundedGitPatch(cwd: string, maxBytes: number): Promise<{ value: string; truncated: boolean }> {
+  return await new Promise((resolvePatch, rejectPatch) => {
+    const child = spawn("git", ["diff", "HEAD", "--no-ext-diff", "--no-color", "--no-textconv"], {
+      cwd,
+      env: localChildEnvironment(),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const chunks: Buffer[] = [];
+    let collectedBytes = 0;
+    let totalBytes = 0;
+    let stderr = "";
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      totalBytes += chunk.length;
+      const remaining = maxBytes + 4 - collectedBytes;
+      if (remaining > 0) {
+        const piece = chunk.subarray(0, Math.min(remaining, chunk.length));
+        chunks.push(piece);
+        collectedBytes += piece.length;
+      }
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (stderr.length < 64_000) stderr += chunk.toString("utf8").slice(0, 64_000 - stderr.length);
+    });
+    child.on("error", (error) => {
+      rejectPatch(new LocalExecutionError("git_command_failed", error.message));
+    });
+    child.on("close", (code) => {
+      if (code !== 0) {
+        rejectPatch(new LocalExecutionError("git_command_failed", stderr.trim() || `git diff exited with code ${code}`));
+        return;
+      }
+      const buffer = Buffer.concat(chunks);
+      resolvePatch({
+        value: utf8Prefix(buffer, maxBytes),
+        truncated: totalBytes > maxBytes,
+      });
+    });
+  });
 }
 
 export async function reviewGit(input: {
@@ -144,8 +186,7 @@ export async function reviewGit(input: {
 
   if (input.includePatch) {
     const maxPatchBytes = Math.max(1_000, Math.min(input.maxPatchBytes ?? 200_000, 2_000_000));
-    const patch = await git(repositoryRoot, ["diff", "HEAD", "--no-ext-diff", "--no-color", "--no-textconv"], true, Math.min(maxPatchBytes * 4, 8_000_000));
-    const bounded = truncateUtf8(patch, maxPatchBytes);
+    const bounded = await boundedGitPatch(repositoryRoot, maxPatchBytes);
     result.patch = bounded.value;
     result.patchTruncated = bounded.truncated;
   }

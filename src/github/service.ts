@@ -308,11 +308,12 @@ export class GitHubService {
       completedAt: run.completed_at,
     }));
     const failureConclusions = new Set(["failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"]);
+    const hasLegacyStatuses = combined.data.total_count > 0;
     const hasFailure = checkRuns.some((run) => run.conclusion !== null && failureConclusions.has(run.conclusion))
-      || combined.data.state === "failure"
-      || combined.data.state === "error";
-    const hasPending = checkRuns.some((run) => run.status !== "completed") || combined.data.state === "pending";
-    const hasAny = checkRuns.length > 0 || combined.data.total_count > 0;
+      || (hasLegacyStatuses && (combined.data.state === "failure" || combined.data.state === "error"));
+    const hasPending = checkRuns.some((run) => run.status !== "completed")
+      || (hasLegacyStatuses && combined.data.state === "pending");
+    const hasAny = checkRuns.length > 0 || hasLegacyStatuses;
     const state = !hasAny ? "none" : hasFailure ? "failing" : hasPending ? "pending" : "passing";
     return {
       repository: normalizeRepo(repository),
