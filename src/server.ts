@@ -9,10 +9,12 @@ import {
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import { OAuthError, ServerError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { AppConfig } from "./config.js";
-import { loadConfig } from "./config.js";
+import { gmailConfigured, loadConfig } from "./config.js";
 import { AuditLogger } from "./audit.js";
 import { AppError, toErrorMessage } from "./errors.js";
 import { GitHubService } from "./github/service.js";
+import type { GmailToolService } from "./gmail/mcp-tools.js";
+import { GmailService, GoogleTokenProvider } from "./gmail/service.js";
 import { LocalAgentGateway } from "./local/gateway.js";
 import { createGitHubMcpServer, type GitHubToolService } from "./mcp.js";
 import { OAUTH_SCOPES, SingleUserOAuthProvider } from "./oauth/provider.js";
@@ -24,6 +26,7 @@ export type AppDependencies = {
   audit: AuditLogger;
   oauth: SingleUserOAuthProvider;
   localGateway: LocalAgentGateway;
+  gmail?: GmailToolService;
 };
 
 function htmlPage(title: string, body: string): string {
@@ -43,7 +46,7 @@ function boundedNumber(value: unknown, fallback: number, min: number, max: numbe
 }
 
 export function createApp(dependencies: AppDependencies): Express {
-  const { config, github, audit, oauth, localGateway } = dependencies;
+  const { config, github, audit, oauth, localGateway, gmail } = dependencies;
   const allowedHosts = new Set([config.publicBaseUrl.hostname.toLowerCase(), "localhost", "127.0.0.1", "[::1]"]);
   const app = express();
   app.disable("x-powered-by");
@@ -178,7 +181,7 @@ export function createApp(dependencies: AppDependencies): Express {
   });
 
   const handleMcpPost = async (req: Request, res: Response) => {
-    const mcpServer = createGitHubMcpServer({ config, github, audit, localGateway });
+    const mcpServer = createGitHubMcpServer({ config, github, audit, localGateway, ...(gmail ? { gmail } : {}) });
     const transport = new StreamableHTTPServerTransport();
     res.once("close", () => {
       void transport.close();
@@ -239,12 +242,23 @@ export function createApp(dependencies: AppDependencies): Express {
 
 export function createDefaultDependencies(config = loadConfig()): AppDependencies {
   const policy = new SecurityPolicy(config);
+  const gmail = gmailConfigured(config)
+    ? new GmailService({
+      accountEmail: config.gmailAccountEmail,
+      tokenProvider: new GoogleTokenProvider({
+        clientId: config.gmailClientId,
+        clientSecret: config.gmailClientSecret,
+        refreshToken: config.gmailRefreshToken,
+      }),
+    })
+    : undefined;
   return {
     config,
     audit: new AuditLogger(config.auditLogPath),
     oauth: new SingleUserOAuthProvider(config),
     github: new GitHubService(config, policy),
     localGateway: new LocalAgentGateway(config),
+    ...(gmail ? { gmail } : {}),
   };
 }
 
