@@ -87,20 +87,6 @@ Mutating/execution tools:
 
 The persistent terminal is PTY-backed on macOS through the native `script(1)` utility, which is enough for interactive shells, REPLs, debuggers, and long-running commands. The dependency-free v1 does not expose a true PTY resize ioctl; `local_terminal_resize` is best-effort and reports that limitation.
 
-### Coding-agent workflow
-
-The MCP publishes a `development_workflow` prompt for non-trivial coding work. Its intended loop is:
-
-```text
-understand → discover AGENTS instructions → inspect → plan → implement → targeted tests → diagnose → broader verification → Git review → visual verification when relevant → CI review → report evidence
-```
-
-Repository instructions follow Codex-style discovery: search for `AGENTS.override.md` and `AGENTS.md` from the repository root toward the target files. Instructions closer to a target file are more specific and override broader repository instructions; direct user/system instructions remain higher priority.
-
-`safe_github_development` remains available for backwards compatibility. GitHub API writes still use managed `chatgpt/*` branches and Pull Requests rather than silently adopting a different Git workflow.
-
-The workflow prefers `local_get_project_context`, `local_code_search`, and `local_git_review` over repeated shell/file calls when those tools can answer the question directly. `local_get_capabilities` should be checked before asking the user to perform a manual workaround.
-
 ### Read-only visual inspection
 
 Visual access is deliberately **eyes without hands**:
