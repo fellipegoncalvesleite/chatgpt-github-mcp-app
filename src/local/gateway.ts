@@ -36,6 +36,7 @@ export type LocalAgentGatewayConfig = Pick<
 export class LocalAgentGateway {
   private readonly queue: LocalRpcRequest[] = [];
   private readonly pending = new Map<string, PendingRequest>();
+  private readonly completedResponses = new Map<string, { agentId: string; expiresAt: number }>();
   private readonly pollWaiters: PollWaiter[] = [];
   private connectedAgentId: string | null = null;
   private lastSeenAtMs: number | null = null;
@@ -138,12 +139,19 @@ export class LocalAgentGateway {
     if (this.connectedAgentId !== agentId) {
       throw new AppError("agent_replaced", "This local-agent connection has been replaced", 409);
     }
+    const now = Date.now();
+    for (const [id, completed] of this.completedResponses) {
+      if (completed.expiresAt <= now) this.completedResponses.delete(id);
+    }
     const pending = this.pending.get(value.id);
     if (!pending) {
+      const completed = this.completedResponses.get(value.id);
+      if (completed?.agentId === agentId && completed.expiresAt > now) return;
       throw new AppError("unknown_rpc_request", `No pending local-agent request ${value.id}`, 404);
     }
     this.pending.delete(value.id);
     clearTimeout(pending.timer);
+    this.completedResponses.set(value.id, { agentId, expiresAt: now + 60_000 });
 
     if (value.ok === true) {
       pending.resolve(value.result);
@@ -165,6 +173,7 @@ export class LocalAgentGateway {
       pending.reject(new AppError("agent_disconnected", "Local-agent gateway closed", 503));
     }
     this.pending.clear();
+    this.completedResponses.clear();
     for (const waiter of this.pollWaiters.splice(0)) {
       clearTimeout(waiter.timer);
       waiter.resolve(null);

@@ -102,15 +102,25 @@ export async function runAgentCycle(
     response = toLocalRpcErrorResponse(request.id, error);
   }
 
-  const posted = await postJson(
-    fetchImpl,
-    endpoint(config, "/local-agent/respond"),
-    config.token,
-    { agentId: config.agentId, response },
-    signal,
-  );
-  if (!posted.ok) throw new Error(`Local-agent response failed: HTTP ${posted.status} ${await posted.text()}`);
-  return true;
+  const responseUrl = endpoint(config, "/local-agent/respond");
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    let posted: Response | undefined;
+    try {
+      posted = await postJson(fetchImpl, responseUrl, config.token, { agentId: config.agentId, response }, signal);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+    if (posted) {
+      if (posted.ok) return true;
+      const error = new Error(`Local-agent response failed: HTTP ${posted.status} ${await posted.text()}`);
+      if (posted.status < 500) throw error;
+      lastError = error;
+    }
+    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 200 * 2 ** (attempt - 1)));
+  }
+  throw lastError ?? new Error("Local-agent response delivery failed");
 }
 
 export async function runLocalAgent(

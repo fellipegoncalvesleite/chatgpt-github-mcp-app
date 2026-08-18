@@ -33,6 +33,25 @@ describe("LocalAgentGateway", () => {
     expect(gateway.status().connected).toBe(true);
   });
 
+  it("accepts a duplicate response when the first acknowledgement was lost", async () => {
+    const config = testConfig({ localAgentPollWaitMs: 1_000 });
+    const gateway = new LocalAgentGateway(config);
+
+    await gateway.poll("mac-1", 0);
+    const resultPromise = gateway.request("system.info", {});
+    const work = await gateway.poll("mac-1", 10);
+    const response = {
+      type: "response" as const,
+      id: work!.id,
+      ok: true as const,
+      result: { hostname: "test-mac" },
+    };
+
+    gateway.respond("mac-1", response);
+    await expect(resultPromise).resolves.toEqual({ hostname: "test-mac" });
+    expect(() => gateway.respond("mac-1", response)).not.toThrow();
+  });
+
   it("returns stable agent errors to the pending request", async () => {
     const config = testConfig();
     const gateway = new LocalAgentGateway(config);
