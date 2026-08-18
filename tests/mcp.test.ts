@@ -188,45 +188,29 @@ describe("GitHub MCP tools", () => {
   });
 });
 
-describe("development workflow", () => {
-  it("publishes inspect-first, AGENTS, testing, and final-verification instructions", async () => {
-    const { client, server } = await connectedClient(["github:read"]);
+describe("MCP behavior guidance", () => {
+  it("restores the pre-roadmap guidance while keeping new tools optional", async () => {
+    const { client, server } = await connectedClient(["github:read"], {}, fakeLocalGateway());
     const instructions = client.getInstructions() ?? "";
-
-    expect(instructions).toMatch(/inspect before edit/i);
-    expect(instructions).toMatch(/AGENTS\.override\.md/);
-    expect(instructions).toMatch(/AGENTS\.md/);
-    expect(instructions).toMatch(/plan non-trivial/i);
-    expect(instructions).toMatch(/test after edit/i);
-    expect(instructions).toMatch(/inspect (the )?final Git state|review (the )?final Git/i);
-    expect(instructions).toMatch(/verify before claiming completion/i);
-
-    await client.close();
-    await server.close();
-  });
-
-  it("registers development_workflow while keeping safe_github_development", async () => {
-    const { client, server } = await connectedClient(["github:read"]);
     const prompts = (await client.listPrompts()).prompts.map((prompt) => prompt.name);
 
+    expect(instructions).toBe([
+      "Use GitHub read tools to inspect the relevant repository and files before proposing GitHub changes.",
+      "Prefer one github_create_change call containing all related file upserts/deletions so the result is one atomic commit.",
+      "github_create_change creates a chatgpt/* branch and Pull Request by default; do not request direct writes to the default branch.",
+      "When local tools are available, they operate on the connected Mac under the user's macOS account and may execute arbitrary shell commands.",
+      "When Gmail tools are available, use search/list tools before reading individual messages and never expose Google OAuth credentials or tokens.",
+      "Gmail v1 intentionally has no trash or permanent-delete tools.",
+      "Never ask for or expose GitHub App private keys, OAuth secrets, LOCAL_AGENT_TOKEN, passwords, .env files, or other protected credentials.",
+    ].join(" "));
+    expect(instructions).not.toMatch(/AGENTS|plan non-trivial|verify before claiming|final Git state/i);
     expect(prompts).toContain("safe_github_development");
-    expect(prompts).toContain("development_workflow");
+    expect(prompts).not.toContain("development_workflow");
 
-    const prompt = await client.getPrompt({
-      name: "development_workflow",
-      arguments: {
-        repository: "acme/demo",
-        task: "Fix the parser without changing unrelated behavior",
-        workingDirectory: "/tmp/demo",
-      },
-    });
-    const text = JSON.stringify(prompt.messages);
-    expect(text).toContain("acme/demo");
-    expect(text).toContain("Fix the parser without changing unrelated behavior");
-    expect(text).toContain("/tmp/demo");
-    expect(text).toMatch(/AGENTS/);
-    expect(text).toMatch(/targeted tests/i);
-    expect(text).toMatch(/Git state|git review/i);
+    const tools = (await client.listTools()).tools;
+    const description = (name: string) => tools.find((tool) => tool.name === name)?.description ?? "";
+    expect(description("local_get_capabilities")).not.toMatch(/before proposing/i);
+    expect(description("local_git_review")).not.toMatch(/final verification/i);
 
     await client.close();
     await server.close();

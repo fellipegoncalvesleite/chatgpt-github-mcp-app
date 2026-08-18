@@ -167,7 +167,7 @@ export function registerLocalTools(
     "local_get_capabilities",
     {
       title: "Get bridge capabilities",
-      description: "Report the caller's effective GitHub, local Mac, visual, and Gmail capabilities before proposing manual workarounds. Screen Recording permission remains unknown until a task-driven capture is attempted.",
+      description: "Report the caller's effective GitHub, local Mac, visual, and Gmail capabilities. Screen Recording permission remains unknown until a capture is attempted.",
       inputSchema: z.object({}),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
@@ -285,7 +285,7 @@ export function registerLocalTools(
     "local_git_review",
     {
       title: "Review local Git state",
-      description: "Return structured branch, upstream, staged/unstaged/untracked/conflict state and diff stats, with an optional bounded patch for final verification.",
+      description: "Return structured branch, upstream, staged/unstaged/untracked/conflict state and diff stats, with an optional bounded patch.",
       inputSchema: z.object({
         workingDirectory: pathSchema,
         includePatch: z.boolean().default(false),
